@@ -15,6 +15,7 @@
 
 import regex
 import self.claim
+import self.numeric
 import self.tokens
 
 // Quotes are the strongest probe available without a model — the claim asserts
@@ -128,10 +129,15 @@ fn of(text: String, min_digits: Int) -> List[claim.Probe] =
     + list.map(list.filter(quotes(text), (q) => not negated(q, text)), (q) => claim.probe("quote", q))
     + list.map(list.filter(entities(text), (e) => not negated(e, text)), (e) => claim.probe("entity", e))
 
-// A page is searched in the normalised shape both sides share, so a probe is
-// normalised the same way before it is looked for.
-fn found_on(p: claim.Probe, page_text: String) -> Bool =
-  string.contains(page_text, tokens.normalize(p.value))
+// Figures are compared as quantities, everything else as text.
+//
+// A quote and a name are literal assertions — the claim says these exact words and
+// this exact name appear — so containment is the right test. A figure is not: a
+// claim restates it in its own units and rounding, and 66% of curated claims were
+// refused for doing so. Arithmetic is the right test there.
+fn found_on(p: claim.Probe, page: claim.Attempt) -> Bool =
+  if p.kind == "figure" then numeric.supported_by(p.value, page.nums)
+  else string.contains(page.text, tokens.normalize(p.value))
 
 test "quotes come out without their brackets" {
   assert_eq(quotes("社長は「過去最高の需要」と述べた"), ["過去最高の需要"])
@@ -171,10 +177,15 @@ test "a claim yields every kind of probe it carries" {
   assert_eq(claim.show_probes(ps), "figure 53.3, quote 過去最高の需要, entity TSMC")
 }
 
-test "probes are matched in the shape the page was normalised into" {
-  assert(found_on(claim.probe("figure", "5,148.1"), "revenue 5148.1 ntd"))
-  assert(found_on(claim.probe("entity", "NVIDIA"), "nvidia said"))
-  assert_eq(found_on(claim.probe("quote", "never said this"), "nvidia said"), false)
+test "a figure matches by quantity, text by containment" {
+  let pg = claim.Attempt {
+    url: "u", error: "",
+    text: "nvidia revenue 514806000 thousand",
+    nums: numeric.numbers_in("nvidia revenue 514806000 thousand"),
+  }
+  assert(found_on(claim.probe("figure", "5148.1"), pg))
+  assert(found_on(claim.probe("entity", "NVIDIA"), pg))
+  assert_eq(found_on(claim.probe("quote", "never said this"), pg), false)
 }
 
 test "a mention made in order to deny it yields no probe" {

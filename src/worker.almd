@@ -21,6 +21,7 @@ import json
 import process
 import self.claim
 import self.judge
+import self.numeric
 import self.page
 import self.report
 
@@ -40,9 +41,11 @@ local fn read_claims(root: Value) -> List[claim.Claim] =
 local fn read_pages(root: Value) -> List[claim.Attempt] =
   list.map(json.get_array(root, "pages") ?? [], (el) => {
     let why = json.get_string(el, "error") ?? ""
+    let text = if why == "" then page.text_of(json.get_string(el, "doc") ?? "") else ""
     claim.Attempt {
       url: json.get_string(el, "url") ?? "",
-      text: if why == "" then page.text_of(json.get_string(el, "doc") ?? "") else "",
+      text: text,
+      nums: if why == "" then numeric.numbers_in(text) else [],
       error: why,
     }
   })
@@ -60,11 +63,14 @@ effect fn main() -> Unit = {
     },
   }
   let min_digits = json.get_int(root, "min_digits") ?? 3
+  // 100 = every probe must be found. Lower it to trade detection for specificity;
+  // bench/score.mjs sweeps this to draw the curve.
+  let min_support = json.get_int(root, "min_support") ?? 100
   let pages = read_pages(root)
 
   var judged: List[claim.Judged] = []
   for c in read_claims(root) {
-    list.push(judged, claim.Judged { claim: c, verdict: judge.verdict(c, for_claim(c, pages), min_digits) })
+    list.push(judged, claim.Judged { claim: c, verdict: judge.verdict_at(c, for_claim(c, pages), min_digits, min_support) })
   }
 
   println(report.render(judged))
@@ -74,8 +80,8 @@ effect fn main() -> Unit = {
 test "a claim is judged against the page its citation names, not the others" {
   let c = claim.Claim { id: "x", text: "5148.1億", citations: ["https://a"] }
   let pages = [
-    claim.Attempt { url: "https://b", text: "5148.1", error: "" },
-    claim.Attempt { url: "https://a", text: "nothing here", error: "" },
+    claim.Attempt { url: "https://b", text: "5148.1", nums: [5148.1], error: "" },
+    claim.Attempt { url: "https://a", text: "nothing here", nums: [], error: "" },
   ]
   assert_eq(claim.tag(judge.verdict(c, for_claim(c, pages), 3)), "unsupported")
 }

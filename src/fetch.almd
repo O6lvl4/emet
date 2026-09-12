@@ -20,6 +20,7 @@
 import env
 import http
 import self.claim
+import self.numeric
 import self.page
 
 let UA = "Mozilla/5.0 (compatible; emet/0.1; +https://github.com/O6lvl4/emet)"
@@ -75,8 +76,8 @@ effect fn attempts(c: claim.Claim) -> List[claim.Attempt] = {
   var out: List[claim.Attempt] = []
   for url in c.citations {
     match page_text(url) {
-      ok(text) => list.push(out, claim.Attempt { url: url, text: text, error: "" }),
-      err(why) => list.push(out, claim.Attempt { url: url, text: "", error: why }),
+      ok(text) => list.push(out, claim.Attempt { url: url, text: text, nums: numeric.numbers_in(text), error: "" }),
+      err(why) => list.push(out, claim.Attempt { url: url, text: "", nums: [], error: why }),
     }
   }
   out

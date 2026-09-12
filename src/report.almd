@@ -36,11 +36,13 @@ local fn claim_value(j: claim.Judged) -> Value = {
       list.push(fields, ("checked", probe_rows(matched)))
       list.push(fields, ("matched", probe_rows(matched)))
       list.push(fields, ("source", value.str(source)))
+      list.push(fields, ("support", value.int(100)))
     },
     Unsupported{ missing, matched, checked } => {
       list.push(fields, ("checked", probe_rows(checked)))
       list.push(fields, ("matched", probe_rows(matched)))
       list.push(fields, ("missing", probe_rows(missing)))
+      list.push(fields, ("support", value.int(100 * list.len(matched) / list.len(checked))))
       list.push(fields, ("repair", value.str(claim.repair(j.verdict))))
     },
     Unreachable{ url, detail } => {

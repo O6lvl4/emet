@@ -1,0 +1,112 @@
+// Comparing a claim's figure to a page's numbers as numbers, not as strings.
+//
+// This exists because literal matching was measured against 115 curated timeline
+// entries and it answers the wrong question. On pages that returned real content,
+// only **34%** of claims had every figure present as written. The other two thirds
+// were not wrong — they restate the figure the way a person writing prose does:
+//
+//   TSMC reports NT$514,806,000 thousand.  The claim says NT$5148.1億.
+//
+// Same quantity, three differences at once: a unit multiplier of 10^4, a rounding
+// to five significant figures, and a thousands separator. String containment sees
+// none of that, so it refused a correct claim citing the correct page — and would
+// do the same to any agent answering "about NT$514.8 billion".
+//
+// So a figure counts as found when the page carries a number that equals it under a
+// power-of-ten scale, within a relative tolerance wide enough for the rounding a
+// person actually does. Both halves are needed: scale alone misses the rounding,
+// tolerance alone misses the units.
+//
+// Nothing here is a judgement. It is arithmetic on two lists of numbers.
+
+import math
+
+// Ten raised to each of these is tried in both directions. The list is contiguous
+// on purpose: a hand-picked set of "the units people use" was tried first and it
+// missed 10^5, which is exactly the TSMC case (514,806,000 thousand against
+// 5148.1億). Unit prefixes compose with rounding in ways that do not stay on the
+// obvious exponents, so every exponent in range is cheaper than being clever.
+let SCALES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+
+// 1% relative. A figure rounded to three significant digits (53.3 from 53.34) sits
+// inside this; a genuinely different quantity does not. Chosen to be generous,
+// because a false refusal is what this file exists to remove — and detection is
+// measured alongside, so the cost of generosity is visible rather than assumed.
+let TOLERANCE = 0.01
+
+local fn approx(a: Float, b: Float) -> Bool = {
+  let scale = float.max(float.abs(a), float.abs(b))
+  if scale == 0.0 then true else float.abs(a - b) / scale <= TOLERANCE
+}
+
+// Does `page_num` equal `figure` at some power of ten, either direction?
+fn same_quantity(figure: Float, page_num: Float) -> Bool = {
+  var hit = false
+  for e in SCALES {
+    let f = math.fpow(10.0, float.from_int(e))
+    if approx(figure, page_num * f) or approx(figure * f, page_num) then hit = true else ()
+  }
+  hit
+}
+
+// Every number in a text, as Floats. Commas are already gone by the time page text
+// reaches here, so a run is digits and at most one dot.
+//
+// Runs of one or two digits are skipped: a page carries hundreds of them and they
+// make a scale match trivially available, which would turn the tolerance into a
+// way to pass anything.
+fn numbers_in(text: String) -> List[Float] = {
+  var out: List[Float] = []
+  var cur = ""
+  let flush = (s: String) => match float.parse(s) { ok(v) => some(v), err(_) => none }
+  for c in string.chars(text) {
+    if string.is_digit(c) or (c == "." and cur != "") then {
+      cur = cur + c
+    } else {
+      if string.len(cur) >= 3 then match flush(string.trim_end(cur)) {
+        some(v) => list.push(out, v),
+        none => (),
+      } else ()
+      cur = ""
+    }
+  }
+  if string.len(cur) >= 3 then match flush(string.trim_end(cur)) {
+    some(v) => list.push(out, v),
+    none => (),
+  } else ()
+  out
+}
+
+// Is this figure supported by any number on the page?
+fn supported_by(figure_text: String, page_nums: List[Float]) -> Bool =
+  match float.parse(figure_text) {
+    err(_) => false,
+    ok(f) => list.any(page_nums, (n) => same_quantity(f, n)),
+  }
+
+test "the same quantity in different units is the same quantity" {
+  // NT$5148.1億 against the 514,806,000-thousand the source prints.
+  assert(same_quantity(5148.1, 514806000.0))
+  assert(same_quantity(200.0, 200000000000.0))
+  assert(same_quantity(53.3, 53.34))
+}
+
+test "a different quantity is not rescued by scaling" {
+  assert_eq(same_quantity(5148.1, 7785900000.0), false)
+  assert_eq(same_quantity(53.3, 61.2), false)
+}
+
+test "rounding is inside the tolerance, a real difference is not" {
+  assert(same_quantity(129.8, 129.81))
+  assert_eq(same_quantity(129.8, 133.0), false)
+}
+
+test "numbers come out of page text, short runs skipped" {
+  assert_eq(numbers_in("revenue 514806000 up 53.3 in q3"), [514806000.0, 53.3])
+  assert_eq(numbers_in("a 1 b 12 c"), [])
+}
+
+test "a figure is supported by a differently scaled page number" {
+  assert(supported_by("5148.1", numbers_in("nt$ 514806000 thousand")))
+  assert_eq(supported_by("7785.9", numbers_in("nt$ 514806000 thousand")), false)
+}

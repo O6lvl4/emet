@@ -205,81 +205,111 @@ it next, which is not this program.
 
 ## Measured
 
-115 entries of a real timeline ([chip-war-chronicle](https://github.com/O6lvl4/chip-war-chronicle),
-every 5th of 574, spanning 2018–2026 and all six of its lanes), each one a claim
-written from the source it cites. Four runs, each one a change the previous run
-forced:
+The gate is a detector, so it is measured as one. Two numbers, and they trade:
 
-| | figures only | + quote/entity | entity advisory | + multi-word names |
-|---|---|---|---|---|
-| `supported` | 28 | 27 | 20 | **21** |
-| `unsupported` | 45 | 72 | 50 | **77** |
-| `unverifiable` | 36 | **11** | 40 | **11** |
-| `unreachable` | 6 | 5 | 5 | **5** |
-| **abstention** | 36.5% | 13.9% | 39.1% | **14.0%** |
+- **detection** — of claims with one piece of evidence corrupted, how many are refused
+- **false refusal** — of curated claims written from the source they cite, how many are refused
 
-**Quotes and names are what make prose checkable.** Abstention fell from 36.5% to
-14.0% — 44 claims that figures alone could not judge at all became judgeable. That
-is the one result that came out as intended.
+Neither means anything alone. Refuse everything and detection is perfect; refuse
+nothing and false refusal is zero. The pair is the operating point.
 
-**Ten of the original 28 passes were spurious.** They were vouched for by a *year*
-matching — `2019` in the claim, `2019` somewhere on the page — and nothing else.
-Excluding years (`is_year`) cost 10 passes that were resting on no evidence.
+**Corpus.** 115 entries of [chip-war-chronicle](https://github.com/O6lvl4/chip-war-chronicle)
+(every 5th of 574, spanning 2018–2026 and all six lanes), each written by hand from
+the source it cites. Every source is fetched **once** (`bench/fetch.mjs`) and all
+sets are judged against byte-identical pages through `src/worker.almd`, so a verdict
+can only differ because of the corruption. 102 of 115 sources returned content; 101
+of those carry real body text, so page acquisition is not the bottleneck.
 
-**Entity probes cannot be made reliable by tuning, and the measurement says so
-four times.** Of 283 entity probes, 96 fail, and inspecting them shows the failures
-are mostly the extractor's: domain vocabulary read as names (GPU, DRAM, NAND, IoT,
-HPC, MoE, G20), and product names a source renders differently (Rubin, BiCS, A12).
-Two attempts to fix it both made something worse:
+**Corruptions**, one per claim per kind: a figure scaled by 1.7, the first name
+swapped for one absent from the corpus, a fabricated 「…」 inserted. The scale factor
+matters — changing the last digit was the first attempt and it was invalid, because
+53.3 → 53.7 is 0.75% and sits *inside* the 1% rounding tolerance, so a correct
+matcher scored as a miss.
 
-- *Demoting entity to advisory* moved abstention from 13.9% to **39.1%** — worse,
-  because an entity is the only probe many claims have, so removing it from the
-  decision removes the claim from being checkable. It also opened a false pass: a
-  right figure on a page about a different company went green.
-- *Spanning multi-word names* is semantically right — "Western Digital" is one name,
-  not two probes — and lowered the entity hit rate from 71% to 66%, because sources
-  write "WD". It is kept anyway: matching the fragment "Western" is a false-pass
-  mechanism, and the same reasoning that excluded years applies here.
+### The curve
 
-And one case no extractor can fix: a claim about TSMC citing TSMC's own press
-release does not need the string "TSMC" in the body, because TSMC is the publisher.
+`min_support` is the share of a claim's probes that must be found. 91 of 115
+originals were decided (the rest unverifiable or unreachable).
 
-The conclusion is in [DESIGN.md](./DESIGN.md): a binary all-or-nothing per probe
-kind is the wrong instrument. An entity miss is weaker evidence than a figure miss,
-and nothing here can say "weaker". That is what the conformal step is for, and why
-this choice is undecidable without it.
+| min_support | false refusal | detection |
+|---|---|---|
+| 100 | 74.7% | 96.1% |
+| 90 | **72.5%** | **89.5%** |
+| 80 | 65.9% | 47.9% |
+| 70 | 62.6% | 33.3% |
+| 60 | 51.6% | 26.4% |
+| 50 | 42.9% | 10.2% |
+| 25 | 29.7% | 4.8% |
+| 1 | 25.3% | 3.1% |
 
-**Redirects were refusing correct claims.** Newsrooms answer 302 —
-`news.samsung.com`, `ir.amd.com`, `www.intc.com`, `news.skhynix.com` — and
-`--timeout-ms` was parsed and then dropped rather than written to the env knob that
-governs the read. Fixing both took `unreachable` from 6 to 3; it is 5 here because
-two slow hosts moved.
+**There is no usable operating point, at any threshold.** The best trade is 72.5%
+false refusal for 89.5% detection. Where false refusal becomes tolerable, detection
+collapses to single digits. A retry loop driven by this would send back three correct
+answers out of four.
 
-**Figures still cannot follow unit conversion or rounding.** A claim reading
-`TSMC の8月の月次売上はNT$5148.1億で、前年同月比53.3%増` cites TSMC's own monthly revenue
-page. `emet` finds `53.3` and refuses on `5148.1`: TSMC reports in NT$ thousands, so
-the figure as written appears nowhere on it, in any scale, because it is also
-rounded. The workable discipline is the reverse — **quote figures in the units the
-source uses** — and it is the intended constraint.
+### Why
+
+Not the matcher, and not the fetcher. On pages carrying real body text, **only 34% of
+claims have every figure present as written**. The rest are not wrong — they restate
+the figure the way a person writing prose does:
+
+> TSMC reports `NT$514,806,000 thousand`. The claim says `NT$5148.1億`.
+
+A unit multiplier of 10⁵, a rounding to five significant figures, and a thousands
+separator, all at once. `src/numeric.almd` was written for exactly this — figures are
+compared as quantities across powers of ten within 1% — and it is worth 3 points of
+specificity (78.0% → 74.7% at full strictness). Three points.
+
+**So the finding is about the approach, not the implementation: citation grounding by
+matching measures a property most honest citations do not have.** Two thirds of
+correctly-sourced claims restate their evidence rather than quote it, and no amount
+of tolerance recovers a figure the source never printed in any form.
+
+That is why [DESIGN.md](./DESIGN.md) now lists the generator-side signals as
+**required** rather than next. They ask a different question — was the model stable
+when it produced this — and that question is indifferent to how the source is worded.
+
+### What the A-group work did establish
+
+- **Quotes and names make prose checkable at all.** Claims with no checkable figure
+  fell from 36 to 11 of 115. Necessary, just not sufficient.
+- **Ten of the first 28 passes were spurious** — vouched for by a *year* matching and
+  nothing else. Excluding years cost 10 passes that rested on no evidence.
+- **Redirects and a dropped timeout were refusing correct claims.** Newsrooms answer
+  302 (`news.samsung.com`, `ir.amd.com`, `www.intc.com`, `news.skhynix.com`), and
+  `--timeout-ms` was parsed and then never written to the env knob that governs the
+  read.
+- **Two decisions could not be made from the data**: whether entity probes should be
+  decisive (advisory moved abstention from 13.9% to 39.1% *and* opened a false pass),
+  and where the support threshold belongs. Both need a calibrated score rather than a
+  binary, which is the strongest argument for the conformal step there is.
+
+### Reproducing
+
+```
+node bench/build.mjs <claims.json> /tmp/bench   # originals + corruption sets
+node bench/fetch.mjs /tmp/bench 8               # one request per source
+node bench/score.mjs /tmp/bench                 # detection / false refusal
+node bench/curve.mjs /tmp/bench                 # sweep min_support
+```
 
 ### Known crash
 
-One citation (`si-2`, a `tsmc.com` blog URL) aborts the process:
+One citation (`si-2`, a `tsmc.com` URL) aborts the process:
 
 ```
 thread 'main' panicked: end byte index 57647 is not a char boundary;
 it is inside '\u{fffd}' (bytes 57645..57648 of string)
 ```
 
-The page contains invalid UTF-8. `fs.read_text` refuses such input outright; the
-HTTP client decodes it lossily, so the string arrives carrying replacement
-characters. Normalising before any index is taken (so every offset comes from the
-string it cuts) did not clear it, and a synthetic invalid-UTF-8 page served over
-HTTP does not reproduce it. A pure-regex rewrite of the page path was tried and
-reverted — it overflowed the stack on a 200 KB page. The 114-entry column above
-excludes this one claim.
+The page contains invalid UTF-8. `fs.read_text` refuses such input outright; the HTTP
+client decodes it lossily, so the string arrives carrying replacement characters.
+Normalising before any index is taken did not clear it, and a synthetic invalid-UTF-8
+page served over HTTP does not reproduce it. A pure-regex rewrite of the page path was
+tried and reverted — it overflowed the stack on a 200 KB page. `bench/fetch.mjs`
+decodes in Node and sidesteps it, which is how the numbers above were obtained.
 
-## Not built yet## Not built yet
+## Not built yet## Not built yet## Not built yet
 
 v0 checks citation coverage and nothing else. The two signals that go with it —
 self-consistency across repeated samples, and stability across paraphrases of the

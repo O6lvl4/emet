@@ -65,10 +65,21 @@ more than improving the model.* Fugu is the existing evidence that a composition
 can beat its parts — Fugu Ultra reaches 82.1 on Terminal-Bench 2.1 with a pool
 whose best member is 78.2 ([technical report](https://arxiv.org/html/2606.21228v1)).
 
-**Unmeasured:** per-component scores for GLM-5.3 are not published, so the arithmetic
-from 68.4 to above 80.2 cannot be completed here. What would settle it is running
-BrowseComp with and without the gate in the retry loop, same model, same budget.
-That is the experiment this repo exists to make possible; it has not been run.
+**Not reached, and the measurement says why.** The gate's own detector curve has no
+usable operating point (see [README.md](./README.md#measured)), so it cannot yet
+serve as the retry signal that argument depends on. Two things are outstanding and
+they are different in kind:
+
+- *Blocked here:* the end-to-end experiment — BrowseComp with and without the gate in
+  a retry loop, same model, same budget — needs a model under test. No API credentials
+  are available in this environment.
+- *Open regardless:* per-component scores for GLM-5.3 are not published, so the
+  arithmetic from 68.4 to above 80.2 cannot be completed from public numbers even
+  with the loop built.
+
+What *was* measurable without a model is the half the loop rests on: whether the gate
+detects wrong answers without refusing right ones. It does not, yet. That is the
+finding, and it is why step 2 below changed.
 
 ## Five rules
 
@@ -122,21 +133,40 @@ calibration set. Turns a hand-set threshold into "error rate ≤ α".
 
 **D — the seal.** `Grounded<T>`.
 
-## Order, and why
+## Order — corrected by measurement
 
-1. **A-group** — cheapest, needs no inference at all, and is the only family that
-   works with no model available. Also the family that produces the calibration
-   rows the rest is fitted on.
-2. **Logprob entropy** — free (same response), and sharpest because the position is
-   known.
-3. **Conformal on the joint score** — the first point at which anything is
-   *guaranteed*.
-4. **Entrance gate** — interpretation self-consistency.
-5. **`Grounded<T>`** — seal it.
-6. **Post-trained abstention** — only if 1–5 are insufficient.
-   [Abstain-R1](https://arxiv.org/abs/2604.17073) reports that calibrated abstention
-   is learnable at 3B with a clarification-aware RLVR reward, so this step is cheap
-   if it is needed. It is last because it is the only one that requires training.
+The first version of this section ordered the work by cost: A-group first because it
+needs no inference. That rationale was wrong, and the measurement is in
+[README.md](./README.md#measured): **A-group alone has no usable operating point at
+any threshold.** Over 91 decided timeline entries, the best trade available is 72.5%
+false refusal for 89.5% detection, and the point with tolerable false refusal
+(25.3%) detects 3.1%. Cheapness does not matter when the whole curve is unusable.
+
+So B-group is not "next". It is **required**, for a reason the measurement makes
+concrete: A-group asks whether the source contains the claim's evidence, and two
+thirds of honestly-sourced claims fail that question because people restate figures
+and paraphrase quotes. B-group asks a different question — whether the generator was
+stable when it produced them — and that question does not care how the source is
+worded.
+
+1. **A-group** — shipped. Necessary but insufficient; it supplies the calibration
+   rows and the retry hints, not the decision.
+2. **Logprob entropy at the probe positions** — the first B-group signal, and free:
+   `probes.of` already knows which tokens carry the evidence, and Workers AI returns
+   per-token logprobs in the same response. This is now the critical path.
+3. **Self-consistency and paraphrase stability** — the two that work on prose, which
+   is where A-group is weakest.
+4. **Conformal on the joint score** — the first point at which anything is
+   *guaranteed*, and the only instrument that can say an entity miss is weaker
+   evidence than a figure miss. The A-group work produced two decisions that cannot
+   be made without it (whether entity probes are decisive; where the support
+   threshold sits), which is the strongest argument for it there is.
+5. **Entrance gate** — interpretation self-consistency.
+6. **`Grounded<T>`** — seal it.
+7. **Post-trained abstention** — only if 1–6 are insufficient.
+   [Abstain-R1](https://arxiv.org/abs/2604.17073) reports calibrated abstention is
+   learnable at 3B with a clarification-aware RLVR reward, so this is cheap if
+   needed. Last because it is the only step that requires training.
 
 ## What the ideal does not reach
 

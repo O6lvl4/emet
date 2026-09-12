@@ -38,7 +38,10 @@ fn of_kind(ps: List[Probe], kind: String) -> List[Probe] = list.filter(ps, (p) =
 // verdict a pure function of claim + pages, which is what makes it runnable
 // where there is no socket — a Cloudflare Worker fetches with the host's own
 // client and hands the text in. See src/worker.almd.
-type Attempt = { url: String, text: String, error: String }
+// `nums` is every number on the page, parsed once when the page is read. A figure
+// is compared against these arithmetically, not looked for as a substring — see
+// src/numeric.almd for why that difference decides whether the gate is usable.
+type Attempt = { url: String, text: String, nums: List[Float], error: String }
 
 fn ok_page(a: Attempt) -> Bool = a.error == ""
 

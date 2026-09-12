@@ -19,6 +19,7 @@
 // — one is a source problem, the other a claim problem.
 
 import self.claim
+import self.numeric
 import self.probes
 
 // What can be settled about a claim before reading anything. A payload-free
@@ -42,7 +43,7 @@ local fn best_source(pages: List[claim.Attempt], ps: List[claim.Probe]) -> Strin
   var best = ""
   var best_hits = 0 - 1
   for pg in pages {
-    let hits = list.len(list.filter(ps, (p) => probes.found_on(p, pg.text)))
+    let hits = list.len(list.filter(ps, (p) => probes.found_on(p, pg)))
     if hits > best_hits then {
       best_hits = hits
       best = pg.url
@@ -51,7 +52,12 @@ local fn best_source(pages: List[claim.Attempt], ps: List[claim.Probe]) -> Strin
   best
 }
 
-fn verdict(c: claim.Claim, attempts: List[claim.Attempt], min_digits: Int) -> claim.Verdict =
+// The share of a claim's probes that were found, in percent so the arithmetic
+// stays integral. An empty probe list never reaches here — `early` refuses it.
+fn support_pct(found: List[claim.Probe], checked: List[claim.Probe]) -> Int =
+  100 * list.len(found) / list.len(checked)
+
+fn verdict_at(c: claim.Claim, attempts: List[claim.Attempt], min_digits: Int, min_support: Int) -> claim.Verdict =
   match early(c, min_digits) {
     NoSource => claim.NoCitation,
     NoProbes => claim.Unverifiable { reason: NO_PROBES },
@@ -64,12 +70,17 @@ fn verdict(c: claim.Claim, attempts: List[claim.Attempt], min_digits: Int) -> cl
           some(a) => claim.Unreachable { url: a.url, detail: a.error },
         },
         false => {
-          let found = list.filter(checked, (p) => list.any(pages, (pg) => probes.found_on(p, pg.text)))
-          let missing = list.filter(checked, (p) => not list.any(pages, (pg) => probes.found_on(p, pg.text)))
-          // Reported in full, decided on the decisive kinds only. An entity that
-          // is missing shows up in the report as a retry hint without refusing a
-          // claim its figures and quotes already stood up for.
-          match list.is_empty(probes.decisive(missing)) {
+          let found = list.filter(checked, (p) => list.any(pages, (pg) => probes.found_on(p, pg)))
+          let missing = list.filter(checked, (p) => not list.any(pages, (pg) => probes.found_on(p, pg)))
+          // Decided on the share of probes found, not on whether any is missing.
+          //
+          // All-or-nothing was measured and it has no usable operating point: over
+          // 91 curated timeline entries it caught 100% of corruptions and refused
+          // 78% of the correct claims, and every probe family did it (figure 67%,
+          // quote 68%, entity 65%). A binary verdict offers nothing to calibrate —
+          // there is no score to move a threshold along. A share does, which is what
+          // makes the conformal step possible at all rather than merely next.
+          match support_pct(found, checked) >= min_support {
             true => claim.Supported { matched: checked, source: best_source(pages, checked) },
             false => claim.Unsupported { missing: missing, matched: found, checked: checked },
           }
@@ -78,8 +89,14 @@ fn verdict(c: claim.Claim, attempts: List[claim.Attempt], min_digits: Int) -> cl
     },
   }
 
-local fn page(url: String, text: String) -> claim.Attempt = claim.Attempt { url: url, text: text, error: "" }
-local fn failed(url: String, why: String) -> claim.Attempt = claim.Attempt { url: url, text: "", error: why }
+// The strict setting, kept as the default so existing callers are unchanged.
+fn verdict(c: claim.Claim, attempts: List[claim.Attempt], min_digits: Int) -> claim.Verdict =
+  verdict_at(c, attempts, min_digits, 100)
+
+local fn page(url: String, text: String) -> claim.Attempt =
+  claim.Attempt { url: url, text: text, nums: numeric.numbers_in(text), error: "" }
+local fn failed(url: String, why: String) -> claim.Attempt =
+  claim.Attempt { url: url, text: "", nums: [], error: why }
 local fn c1(text: String, cites: List[String]) -> claim.Claim = claim.Claim { id: "t", text: text, citations: cites }
 
 test "a claim with no source is refused before any fetch" {
