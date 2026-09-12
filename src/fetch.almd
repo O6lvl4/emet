@@ -1,76 +1,95 @@
-// Getting the text of a cited page.
+// Reading the cited pages. The only part of the tool that touches the network,
+// kept to one file so the rest builds and runs where there is no socket
+// (src/worker.almd is that path).
 //
-// Tags come out, and `script` and `style` bodies come out before them: a figure
-// inside a tracking snippet or a CSS rule must never be allowed to vouch for a
-// claim. What is left is normalised the same way the claim is, so the two sides
-// are compared in one shape.
+// Three things measured against real sources, each of which was refusing correct
+// claims for reasons that had nothing to do with the claim:
 //
-// A default user agent gets a 403 from enough publishers that the gate would
-// refuse correct claims for a reason that has nothing to do with the claim, so
-// one is sent. A non-2xx is reported as unreachable rather than searched, since
-// an error page contains numbers of its own.
+//   * A default user agent gets a 403 from enough publishers that one has to be
+//     sent.
+//   * Newsrooms redirect. `news.samsung.com`, `ir.amd.com`, `www.intc.com` and
+//     `news.skhynix.com` all answered 302 to a canonical URL, and every one of
+//     those claims came back "unreachable" until the hop was followed.
+//   * The read timeout is a process-wide env knob, not a call argument, so the
+//     `--timeout-ms` flag has to be written into the environment or it does
+//     nothing at all.
+//
+// A non-2xx that is not a redirect is reported rather than searched, since an
+// error page carries figures of its own.
 
+import env
 import http
-import self.tokens
+import self.claim
+import self.page
 
 let UA = "Mozilla/5.0 (compatible; emet/0.1; +https://github.com/O6lvl4/emet)"
 
-// Pages past this are truncated. A figure below the cut reads as missing, which
-// is a refusal rather than a false pass — the safe direction for a gate.
-let MAX_CHARS = 1000000
+let MAX_HOPS = 5
 
-local fn drop_blocks(src: String, open_tag: String, close_tag: String) -> String =
-  match string.index_of(string.to_lower(src), open_tag) {
-    none => src,
-    some(i) => {
-      let head = string.slice(src, 0, i)
-      let rest = string.drop(src, i)
-      match string.index_of(string.to_lower(rest), close_tag) {
-        none => head,
-        some(j) => head + " " + drop_blocks(string.drop(rest, j + string.len(close_tag)), open_tag, close_tag),
-      }
-    },
+// `request_response` here, not the `status` pair: following a redirect needs the
+// `Location` header, and only this family carries headers. It has no wasm host
+// binding, which costs nothing — this file is native by construction.
+local effect fn hop(url: String) -> Result[HttpResponse, String] = {
+  let headers = ["User-Agent": UA, "Accept": "text/html,application/xhtml+xml,text/plain,*/*"]
+  http.request_response("GET", url, "", headers)
+}
+
+// Relative targets are resolved against the host only, which covers every
+// redirect seen in practice (`/news/x` from a newsroom root). A relative hop with
+// a path-relative target is left alone and reported rather than guessed at.
+local fn resolve(from: String, target: String) -> String =
+  if string.starts_with(target, "http://") or string.starts_with(target, "https://") then target
+  else if string.starts_with(target, "//") then "https:" + target
+  else if string.starts_with(target, "/") then {
+    let after = string.drop(from, string.len("https://"))
+    match string.index_of(after, "/") {
+      none => from + target,
+      some(i) => string.take(from, string.len("https://") + i) + target,
+    }
+  } else from
+
+local effect fn follow(url: String, hops_left: Int) -> Result[String, String] = {
+  guard hops_left > 0 else err("リダイレクトが多すぎる")
+  let resp = hop(url)!
+  let code = http.status_code(resp)
+  if code >= 200 and code < 300 then ok(page.text_of(http.body(resp)))
+  else if code >= 300 and code < 400 then match http.get_header(resp, "Location") {
+    none => err("HTTP " + int.to_string(code) + " (Location がない)"),
+    some(target) => follow(resolve(url, target), hops_left - 1)!,
   }
+  else err("HTTP " + int.to_string(code))
+}
 
-// Everything between `<` and `>` goes, and the tag leaves a space behind so
-// that `<td>53</td><td>3</td>` cannot read as the figure "533".
-local fn strip_tags(src: String) -> String = {
-  var parts: List[String] = []
-  var depth = 0
-  for c in string.chars(src) {
-    if c == "<" then {
-      depth = depth + 1
-    } else if c == ">" then {
-      depth = if depth > 0 then depth - 1 else 0
-      list.push(parts, " ")
-    } else {
-      if depth == 0 then list.push(parts, c) else ()
+effect fn page_text(url: String) -> Result[String, String] = {
+  guard string.starts_with(url, "http://") or string.starts_with(url, "https://") else err("http(s) ではない URL")
+  follow(url, MAX_HOPS)
+}
+
+// The read timeout is process-wide. Set once, before anything is fetched.
+effect fn set_timeout(timeout_ms: Int) -> Unit =
+  env.set("ALMIDE_HTTP_TIMEOUT_SECS", int.to_string(if timeout_ms < 1000 then 1 else timeout_ms / 1000))
+
+// Read every source a claim cites. A failure is a value, not a stop: one 403
+// among three citations still leaves the claim judgeable on the other two.
+effect fn attempts(c: claim.Claim) -> List[claim.Attempt] = {
+  var out: List[claim.Attempt] = []
+  for url in c.citations {
+    match page_text(url) {
+      ok(text) => list.push(out, claim.Attempt { url: url, text: text, error: "" }),
+      err(why) => list.push(out, claim.Attempt { url: url, text: "", error: why }),
     }
   }
-  string.join(parts, "")
+  out
 }
 
-fn page_of(html: String) -> String =
-  tokens.normalize(strip_tags(drop_blocks(drop_blocks(string.take(html, MAX_CHARS), "<script", "</script>"), "<style", "</style>")))
-
-effect fn page_text(url: String, timeout_ms: Int) -> Result[String, String] = {
-  guard string.starts_with(url, "http://") or string.starts_with(url, "https://") else err("http(s) ではない URL")
-  let headers = ["User-Agent": UA, "Accept": "text/html,application/xhtml+xml,text/plain,*/*"]
-  let resp = http.request_response("GET", url, "", headers)!
-  let code = http.status_code(resp)
-  guard code >= 200 and code < 300 else err("HTTP " + int.to_string(code))
-  ok(page_of(http.body(resp)))
+test "absolute redirect targets are taken as they are" {
+  assert_eq(resolve("https://ir.amd.com/news/x", "https://ir.amd.com/news/y"), "https://ir.amd.com/news/y")
 }
 
-test "tags go, and leave a boundary where they were" {
-  assert_eq(page_of("<td>53</td><td>3</td>"), " 53  3 ")
+test "root-relative targets resolve against the host" {
+  assert_eq(resolve("https://news.samsung.com/global/old", "/global/new"), "https://news.samsung.com/global/new")
 }
 
-test "figures inside script and style cannot vouch" {
-  assert_eq(string.contains(page_of("<script>var x = 53.3</script>ok"), "53.3"), false)
-  assert_eq(string.contains(page_of("<style>.a{width:53.3px}</style>ok"), "53.3"), false)
-}
-
-test "page text is normalised like the claim" {
-  assert_eq(string.contains(page_of("<p>NT$5,148.1 Billion</p>"), "5148.1"), true)
+test "protocol-relative targets keep https" {
+  assert_eq(resolve("https://a.example/x", "//b.example/y"), "https://b.example/y")
 }

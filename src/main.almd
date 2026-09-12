@@ -15,6 +15,7 @@ import fs
 import json
 import process
 import self.claim
+import self.fetch
 import self.judge
 import self.report
 
@@ -24,6 +25,7 @@ emet <claims.json|-> [options]
   --report <path>          refusals and passes as JSON, one row per claim
   --allow-unverifiable     let claims with no checkable figure through
   --min-digits <n>         a figure needs this many digits to be checked (3)
+                           years (1900-2099) are never checked
   --timeout-ms <n>         per-request budget (15000)
   --quiet                  exit status only
 
@@ -91,16 +93,17 @@ effect fn main() -> Unit = {
     },
   }
 
-  let opts = judge.Opts {
-    timeout_ms: int_opt(args, "--timeout-ms", 15000),
-    min_digits: int_opt(args, "--min-digits", 3),
-  }
+  let _ = fetch.set_timeout(int_opt(args, "--timeout-ms", 15000))
+  let min_digits = int_opt(args, "--min-digits", 3)
   let lenient = flag(args, "--allow-unverifiable")
   let quiet = flag(args, "--quiet")
 
+  // The order the gate specifies: ask whether reading the sources can change the
+  // answer, and only then spend the requests.
   var judged: List[claim.Judged] = []
   for c in claims {
-    list.push(judged, claim.Judged { claim: c, verdict: judge.judge(c, opts)! })
+    let tried = if judge.needs_fetch(c, min_digits) then fetch.attempts(c)! else []
+    list.push(judged, claim.Judged { claim: c, verdict: judge.verdict(c, tried, min_digits) })
   }
 
   let refused = list.filter(judged, (j) => not claim.passed(j.verdict) and

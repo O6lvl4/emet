@@ -19,6 +19,18 @@ fn is_num_char(c: String) -> Bool = string.is_digit(c) or c == "." or c == ","
 
 fn digit_count(s: String) -> Int = list.len(list.filter(string.chars(s), (c) => string.is_digit(c)))
 
+// A bare four-digit integer in this range is a year, not a figure the claim is
+// making. Measured against 115 chronicle entries, years were the single largest
+// source of useless checks: a claim whose real number was "30%" had "2011" and
+// "2019" checked instead, because those clear the digit floor and the percentage
+// does not. A year's presence on a page says almost nothing, and its absence
+// refuses a claim for no reason.
+fn is_year(f: String) -> Bool =
+  string.len(f) == 4 and digit_count(f) == 4 and match int.parse(f) {
+    err(_) => false,
+    ok(n) => n >= 1900 and n <= 2099,
+  }
+
 // Drop separators that ended up on an edge: the run taken from "2026年" is
 // "2026", and the one from "率は53.3%。" must not keep its trailing dot.
 fn trim_seps(s: String) -> String = {
@@ -53,16 +65,29 @@ fn runs(text: String) -> List[String] = {
   out
 }
 
-// The figures worth checking, deduplicated and in the order they appear.
+// The figures worth checking, deduplicated and in the order they appear. A run
+// clears the floor on digits and is not a year.
 fn figures(text: String, min_digits: Int) -> List[String] = {
   let cleaned = list.map(runs(normalize(text)), (r) => trim_seps(r))
-  list.unique(list.filter(cleaned, (f) => digit_count(f) >= min_digits))
+  list.unique(list.filter(cleaned, (f) => digit_count(f) >= min_digits and not is_year(f)))
 }
 
 test "figures come out of prose with their units attached" {
   assert_eq(figures("前年同月比53.3%増", 3), ["53.3"])
   assert_eq(figures("NT$5148.1億で前月比10.1%増", 3), ["5148.1", "10.1"])
-  assert_eq(figures("2026年9月10日", 3), ["2026"])
+}
+
+test "years are not figures" {
+  assert_eq(figures("2026年9月10日", 3), [])
+  assert_eq(figures("2011年以来の急落", 3), [])
+  assert(is_year("2019"))
+  assert_eq(is_year("2100"), false)
+  assert_eq(is_year("5148"), false)
+  assert_eq(is_year("53.3"), false)
+}
+
+test "a four-digit quantity that is not a year still counts" {
+  assert_eq(figures("5520億のMoE", 3), ["5520"])
 }
 
 test "short runs are dropped, long ones kept" {

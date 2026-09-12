@@ -11,6 +11,17 @@
 
 type Claim = { id: String, text: String, citations: List[String] }
 
+// One source, after someone tried to read it. `error` empty means `text` is the
+// page; otherwise `text` is empty and `error` says why.
+//
+// The judging takes these rather than fetching them itself. That keeps the
+// verdict a pure function of claim + pages, which is what makes it runnable
+// where there is no socket — a Cloudflare Worker fetches with the host's own
+// client and hands the text in. See src/worker.almd.
+type Attempt = { url: String, text: String, error: String }
+
+fn ok_page(a: Attempt) -> Bool = a.error == ""
+
 type Verdict =
   | Supported{ matched: List[String], source: String }
   | NoCitation

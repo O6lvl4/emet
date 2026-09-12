@@ -1,0 +1,66 @@
+// Turning a fetched document into text a figure can be looked for in.
+//
+// Pure, and separate from the fetching on purpose: whoever read the page — this
+// program's own client, or a Worker's host `fetch` — hands the bytes here, and
+// both get identical text out. This is the half of the tool that runs where
+// there is no socket.
+//
+// `script` and `style` bodies go before the tags do: a figure inside a tracking
+// snippet or a CSS rule must never be allowed to vouch for a claim.
+
+import self.tokens
+
+// Documents past this are truncated. A figure below the cut reads as missing,
+// which is a refusal rather than a false pass — the safe direction for a gate.
+let MAX_CHARS = 1000000
+
+local fn drop_blocks(src: String, open_tag: String, close_tag: String) -> String =
+  match string.index_of(string.to_lower(src), open_tag) {
+    none => src,
+    some(i) => {
+      let head = string.slice(src, 0, i)
+      let rest = string.drop(src, i)
+      match string.index_of(string.to_lower(rest), close_tag) {
+        none => head,
+        some(j) => head + " " + drop_blocks(string.drop(rest, j + string.len(close_tag)), open_tag, close_tag),
+      }
+    },
+  }
+
+// Everything between `<` and `>` goes, and the tag leaves a space behind so that
+// `<td>53</td><td>3</td>` cannot read as the figure "533".
+local fn strip_tags(src: String) -> String = {
+  var parts: List[String] = []
+  var depth = 0
+  for c in string.chars(src) {
+    if c == "<" then {
+      depth = depth + 1
+    } else if c == ">" then {
+      depth = if depth > 0 then depth - 1 else 0
+      list.push(parts, " ")
+    } else {
+      if depth == 0 then list.push(parts, c) else ()
+    }
+  }
+  string.join(parts, "")
+}
+
+fn text_of(doc: String) -> String =
+  tokens.normalize(strip_tags(drop_blocks(drop_blocks(string.take(doc, MAX_CHARS), "<script", "</script>"), "<style", "</style>")))
+
+test "tags go, and leave a boundary where they were" {
+  assert_eq(text_of("<td>53</td><td>3</td>"), " 53  3 ")
+}
+
+test "figures inside script and style cannot vouch" {
+  assert_eq(string.contains(text_of("<script>var x = 53.3</script>ok"), "53.3"), false)
+  assert_eq(string.contains(text_of("<style>.a{width:53.3px}</style>ok"), "53.3"), false)
+}
+
+test "document text is normalised like the claim" {
+  assert_eq(string.contains(text_of("<p>NT$5,148.1 Billion</p>"), "5148.1"), true)
+}
+
+test "plain text passes through, lowercased" {
+  assert_eq(text_of("Revenue 5,148.1"), "revenue 5148.1")
+}

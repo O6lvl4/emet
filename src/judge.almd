@@ -1,13 +1,18 @@
-// The gate.
+// The gate, as a pure function.
 //
-// The order of the checks is the whole design. A claim with no source is refused
+// Nothing here opens a socket. It takes the claim and whatever came back from
+// its sources and returns a verdict, so the same code decides on a laptop, in
+// CI, and inside a Worker that did the fetching with the host's own client.
+//
+// The order of the checks is the design. A claim with no source is refused
 // before anything is fetched, and a claim with nothing checkable is refused
-// before that — there is no point spending a request to learn that the answer
-// would have been "cannot tell" either way.
+// before that — no request is spent to learn that the answer would have been
+// "cannot tell" either way. `needs_fetch` is what lets a caller honour that
+// order: ask it first, and skip the network when it says no.
 //
 // A figure counts as found if it appears on any one of the cited pages. Sources
-// are treated as a set, not a ranking: a claim that cites two pages and takes
-// one figure from each is supported.
+// are a set, not a ranking: a claim citing two pages and taking one figure from
+// each is supported.
 //
 // Only pages that answered are searched. A citation that 403s leaves the claim
 // unreachable rather than unsupported, because the two call for different
@@ -15,17 +20,26 @@
 
 import self.claim
 import self.tokens
-import self.fetch
 
-type Opts = { timeout_ms: Int, min_digits: Int }
+// What can be settled about a claim before reading anything. This is a
+// payload-free variant rather than an `Option[Verdict]` on purpose: the verified
+// wasm renderer — the only wasm path there is — cannot return an *empty* option
+// of a heap type ("would move out an empty deferred heap value"), and a Verdict
+// carries lists, so `Verdict?` is exactly that shape. Naming the three states
+// costs nothing and lowers cleanly, and it reads better than an option whose
+// `none` means "keep going".
+local type Early: Eq = NoSource | NoFigures | MustRead
 
-local type Fetched = { url: String, text: String }
+local fn early(c: claim.Claim, min_digits: Int) -> Early =
+  if list.is_empty(c.citations) then NoSource
+  else if list.is_empty(tokens.figures(c.text, min_digits)) then NoFigures
+  else MustRead
 
-fn default_opts() -> Opts = Opts { timeout_ms: 15000, min_digits: 3 }
+fn needs_fetch(c: claim.Claim, min_digits: Int) -> Bool = early(c, min_digits) == MustRead
 
 // The page that accounted for the most figures, so the report names the source
 // a reader should open first.
-local fn best_source(pages: List[Fetched], figures: List[String]) -> String = {
+local fn best_source(pages: List[claim.Attempt], figures: List[String]) -> String = {
   var best = ""
   var best_hits = 0 - 1
   for p in pages {
@@ -38,53 +52,73 @@ local fn best_source(pages: List[Fetched], figures: List[String]) -> String = {
   best
 }
 
-effect fn judge(c: claim.Claim, o: Opts) -> claim.Verdict = {
-  let figures = tokens.figures(c.text, o.min_digits)
-  if list.is_empty(c.citations) then claim.NoCitation
-  else if list.is_empty(figures) then
-    claim.Unverifiable { reason: "検査できる数値がない（v0 は数値しか照合しない）" }
-  else {
-    var pages: List[Fetched] = []
-    var first_failed_url = ""
-    var first_failed_detail = ""
-    for url in c.citations {
-      match fetch.page_text(url, o.timeout_ms) {
-        ok(text) => list.push(pages, Fetched { url: url, text: text }),
-        err(detail) => {
-          if first_failed_url == "" then {
-            first_failed_url = url
-            first_failed_detail = detail
-          } else ()
+fn verdict(c: claim.Claim, attempts: List[claim.Attempt], min_digits: Int) -> claim.Verdict =
+  match early(c, min_digits) {
+    NoSource => claim.NoCitation,
+    NoFigures => claim.Unverifiable { reason: "検査できる数値がない（数値しか照合しない）" },
+    MustRead => {
+      let figures = tokens.figures(c.text, min_digits)
+      let pages = list.filter(attempts, (a) => claim.ok_page(a))
+      match list.is_empty(pages) {
+        true => match list.first(attempts) {
+          none => claim.Unreachable { url: "", detail: "出典を読んでいない" },
+          some(a) => claim.Unreachable { url: a.url, detail: a.error },
+        },
+        false => {
+          let found = list.filter(figures, (f) => list.any(pages, (p) => string.contains(p.text, f)))
+          let missing = list.filter(figures, (f) => not list.any(pages, (p) => string.contains(p.text, f)))
+          match list.is_empty(missing) {
+            true => claim.Supported { matched: figures, source: best_source(pages, figures) },
+            false => claim.Unsupported { missing: missing, matched: found, checked: figures },
+          }
         },
       }
-    }
-    if list.is_empty(pages) then
-      claim.Unreachable { url: first_failed_url, detail: first_failed_detail }
-    else {
-      let found = list.filter(figures, (f) => list.any(pages, (p) => string.contains(p.text, f)))
-      let missing = list.filter(figures, (f) => not list.any(pages, (p) => string.contains(p.text, f)))
-      if list.is_empty(missing) then
-        claim.Supported { matched: figures, source: best_source(pages, figures) }
-      else
-        claim.Unsupported { missing: missing, matched: found, checked: figures }
-    }
+    },
   }
+
+local fn page(url: String, text: String) -> claim.Attempt = claim.Attempt { url: url, text: text, error: "" }
+local fn failed(url: String, why: String) -> claim.Attempt = claim.Attempt { url: url, text: "", error: why }
+local fn c1(text: String, cites: List[String]) -> claim.Claim = claim.Claim { id: "t", text: text, citations: cites }
+
+test "a claim with no source is refused before any fetch" {
+  assert_eq(needs_fetch(c1("売上は53.3%増", []), 3), false)
+  assert_eq(claim.tag(verdict(c1("売上は53.3%増", []), [], 3)), "no_citation")
 }
 
-test "a claim with no source is refused without a fetch" {
-  let c = claim.Claim { id: "c1", text: "売上は53.3%増", citations: [] }
-  assert_eq(claim.tag(judge(c, default_opts())!), "no_citation")
+test "a claim with nothing checkable is refused before any fetch" {
+  assert_eq(needs_fetch(c1("市場は好調だった", ["https://a"]), 3), false)
+  assert_eq(claim.tag(verdict(c1("市場は好調だった", ["https://a"]), [], 3)), "unverifiable")
 }
 
-test "a claim with nothing checkable is refused, not passed" {
-  let c = claim.Claim { id: "c2", text: "市場は好調だった", citations: ["https://example.com"] }
-  assert_eq(claim.tag(judge(c, default_opts())!), "unverifiable")
+test "every figure on the page is supported" {
+  let v = verdict(c1("5148.1億で53.3%増", ["https://a"]), [page("https://a", "5148.1 53.3")], 3)
+  assert_eq(claim.tag(v), "supported")
+}
+
+test "a figure absent from the page is refused, and named" {
+  let v = verdict(c1("5148.1億で53.3%増", ["https://a"]), [page("https://a", "53.3 only")], 3)
+  assert_eq(claim.tag(v), "unsupported")
+  assert_eq(claim.reason(v), "裏が取れない数値 1/2: 5148.1")
+}
+
+test "figures may come from different sources" {
+  let v = verdict(c1("5148.1億で53.3%増", ["https://a", "https://b"]),
+    [page("https://a", "5148.1"), page("https://b", "53.3")], 3)
+  assert_eq(claim.tag(v), "supported")
+}
+
+test "a source that did not answer is unreachable, not unsupported" {
+  let v = verdict(c1("5148.1億", ["https://a"]), [failed("https://a", "HTTP 403")], 3)
+  assert_eq(claim.tag(v), "unreachable")
+}
+
+test "one reachable source is enough to judge the claim" {
+  let v = verdict(c1("5148.1億", ["https://a", "https://b"]),
+    [failed("https://a", "HTTP 403"), page("https://b", "5148.1")], 3)
+  assert_eq(claim.tag(v), "supported")
 }
 
 test "the source with the most figures is the one reported" {
-  let pages = [
-    Fetched { url: "https://a", text: "53.3" },
-    Fetched { url: "https://b", text: "53.3 and 10.1" },
-  ]
+  let pages = [page("https://a", "53.3"), page("https://b", "53.3 and 10.1")]
   assert_eq(best_source(pages, ["53.3", "10.1"]), "https://b")
 }

@@ -1,0 +1,81 @@
+// The gate with the network taken out.
+//
+// Reads claims *and* the documents their sources returned from stdin, judges,
+// and writes the report to stdout. No `http` import anywhere in its graph, which
+// is the whole point: this is the entry that a Cloudflare Worker drives. The
+// host's own `fetch` reads the sources — it is better at that than any client
+// compiled in here, and it is the only one available inside a Worker — and hands
+// the bytes in. The verdict is identical to the native binary's, because it is
+// the same function.
+//
+//   { "min_digits": 3,
+//     "claims": [{"id": "c1", "text": "…", "citations": ["https://a"]}],
+//     "pages":  [{"url": "https://a", "doc": "<html>…", "error": ""}] }
+//
+// `doc` is the raw document; the tag stripping happens here so the Worker does
+// not have to reproduce it. A page carrying `error` is a source that did not
+// answer, and lands as `unreachable` exactly as it would natively.
+
+import io
+import json
+import process
+import self.claim
+import self.judge
+import self.page
+import self.report
+
+local fn str_list(v: Value, key: String) -> List[String] =
+  list.filter_map(json.get_array(v, key) ?? [], (x) =>
+    match value.as_string(x) { ok(s) => some(s), err(_) => none })
+
+local fn read_claims(root: Value) -> List[claim.Claim] =
+  list.map(json.get_array(root, "claims") ?? [], (el) => claim.Claim {
+    id: json.get_string(el, "id") ?? "",
+    text: json.get_string(el, "text") ?? "",
+    citations: str_list(el, "citations"),
+  })
+
+// Documents arrive raw and are reduced here, once, so a page cited by several
+// claims is not stripped once per claim.
+local fn read_pages(root: Value) -> List[claim.Attempt] =
+  list.map(json.get_array(root, "pages") ?? [], (el) => {
+    let why = json.get_string(el, "error") ?? ""
+    claim.Attempt {
+      url: json.get_string(el, "url") ?? "",
+      text: if why == "" then page.text_of(json.get_string(el, "doc") ?? "") else "",
+      error: why,
+    }
+  })
+
+fn for_claim(c: claim.Claim, pages: List[claim.Attempt]) -> List[claim.Attempt] =
+  list.filter(pages, (p) => list.contains(c.citations, p.url))
+
+effect fn main() -> Unit = {
+  let root = match json.parse(io.read_all()) {
+    ok(v) => v,
+    err(e) => {
+      println(json.stringify(value.object([("error", value.str("JSON として読めない: " + e))])))
+      process.exit(2)
+      value.object([])
+    },
+  }
+  let min_digits = json.get_int(root, "min_digits") ?? 3
+  let pages = read_pages(root)
+
+  var judged: List[claim.Judged] = []
+  for c in read_claims(root) {
+    list.push(judged, claim.Judged { claim: c, verdict: judge.verdict(c, for_claim(c, pages), min_digits) })
+  }
+
+  println(report.render(judged))
+  process.exit(if list.all(judged, (j) => claim.passed(j.verdict)) then 0 else 1)
+}
+
+test "a claim is judged against the page its citation names, not the others" {
+  let c = claim.Claim { id: "x", text: "5148.1億", citations: ["https://a"] }
+  let pages = [
+    claim.Attempt { url: "https://b", text: "5148.1", error: "" },
+    claim.Attempt { url: "https://a", text: "nothing here", error: "" },
+  ]
+  assert_eq(claim.tag(judge.verdict(c, for_claim(c, pages), 3)), "unsupported")
+}
