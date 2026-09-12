@@ -1,0 +1,73 @@
+{
+ "min_digits": 3,
+ "claims": [
+  {
+   "id": "all-found",
+   "text": "売上は5148.1億で53.3%増。",
+   "citations": [
+    "https://a"
+   ]
+  },
+  {
+   "id": "partial",
+   "text": "売上は5148.1億で53.3%増。",
+   "citations": [
+    "https://b"
+   ]
+  },
+  {
+   "id": "two-sources",
+   "text": "売上は5148.1億で53.3%増。",
+   "citations": [
+    "https://a2",
+    "https://b2"
+   ]
+  },
+  {
+   "id": "blocked",
+   "text": "総額は321323031390。",
+   "citations": [
+    "https://c"
+   ]
+  },
+  {
+   "id": "no-figs",
+   "text": "市場は好調だった。",
+   "citations": [
+    "https://a"
+   ]
+  },
+  {
+   "id": "no-cite",
+   "text": "幻覚率は51.2%だった。",
+   "citations": []
+  }
+ ],
+ "pages": [
+  {
+   "url": "https://a",
+   "doc": "<p>NT$5,148.1 and <b>53.3</b>%</p>",
+   "error": ""
+  },
+  {
+   "url": "https://b",
+   "doc": "<p>only 53.3% here</p>",
+   "error": ""
+  },
+  {
+   "url": "https://a2",
+   "doc": "<p>5,148.1</p>",
+   "error": ""
+  },
+  {
+   "url": "https://b2",
+   "doc": "<script>var q=1</script><p>53.3%</p>",
+   "error": ""
+  },
+  {
+   "url": "https://c",
+   "doc": "",
+   "error": "HTTP 403"
+  }
+ ]
+}
