@@ -1,0 +1,126 @@
+// emet — write truth on it, or do not let it move.
+//
+// Reads claims with their sources, checks every figure in each claim against the
+// pages it cites, and answers with an exit status: 0 if every claim is
+// supported, 1 if any is refused. That status is the whole interface. Whatever
+// runs this decides what to do about it — the tool takes no position beyond
+// whether the claim stood up.
+//
+// `--allow-unverifiable` is the one loosening, and it is off by default: a claim
+// this tool cannot check is refused unless the caller says otherwise, because a
+// gate whose default is "probably fine" is not a gate.
+
+import io
+import fs
+import json
+import process
+import self.claim
+import self.judge
+import self.report
+
+let USAGE = """
+emet <claims.json|-> [options]
+
+  --report <path>          refusals and passes as JSON, one row per claim
+  --allow-unverifiable     let claims with no checkable figure through
+  --min-digits <n>         a figure needs this many digits to be checked (3)
+  --timeout-ms <n>         per-request budget (15000)
+  --quiet                  exit status only
+
+exit: 0 every claim supported · 1 something refused · 2 bad input
+
+input: {"claims":[{"id":"c1","text":"...","citations":["https://..."]}]}
+"""
+
+local fn flag(args: List[String], name: String) -> Bool = list.contains(args, name)
+
+local fn opt(args: List[String], name: String) -> String? =
+  match list.index_of(args, name) {
+    none => none,
+    some(i) => list.get(args, i + 1),
+  }
+
+local fn int_opt(args: List[String], name: String, fallback: Int) -> Int =
+  match opt(args, name) {
+    none => fallback,
+    some(raw) => int.parse(raw) ?? fallback,
+  }
+
+local fn parse_claims(raw: String) -> Result[List[claim.Claim], String] = {
+  let root = json.parse(raw).map_err((e) => "JSON として読めない: " + e)!
+  let arr = json.get_array(root, "claims") ?? []
+  guard not list.is_empty(arr) else err("claims が空、または claims フィールドがない")
+  ok(list.map(arr, (el) => claim.Claim {
+    id: json.get_string(el, "id") ?? "",
+    text: json.get_string(el, "text") ?? "",
+    citations: list.filter_map(json.get_array(el, "citations") ?? [], (v) =>
+      match value.as_string(v) { ok(s) => some(s), err(_) => none }),
+  }))
+}
+
+// A refusal has to be readable without opening the report, so the reason is
+// printed next to the id rather than left to the JSON.
+local fn line(j: claim.Judged) -> String = {
+  let mark = if claim.passed(j.verdict) then "ok  " else "MET "
+  mark + string.pad_end(j.claim.id, 12, " ") + " " + string.pad_end(claim.tag(j.verdict), 13, " ") + " " + claim.reason(j.verdict)
+}
+
+effect fn main() -> Unit = {
+  let args = process.args()
+  let source = list.get(args, 1) ?? ""
+  if source == "" or source == "-h" or source == "--help" then {
+    println(USAGE)
+    process.exit(if source == "" then 2 else 0)
+  } else ()
+
+  let raw = if source == "-" then io.read_all() else match fs.read_text(source) {
+    ok(text) => text,
+    err(e) => {
+      println("読めない: ${source}: ${e}")
+      process.exit(2)
+      ""
+    },
+  }
+
+  let claims = match parse_claims(raw) {
+    ok(cs) => cs,
+    err(e) => {
+      println(e)
+      process.exit(2)
+      []
+    },
+  }
+
+  let opts = judge.Opts {
+    timeout_ms: int_opt(args, "--timeout-ms", 15000),
+    min_digits: int_opt(args, "--min-digits", 3),
+  }
+  let lenient = flag(args, "--allow-unverifiable")
+  let quiet = flag(args, "--quiet")
+
+  var judged: List[claim.Judged] = []
+  for c in claims {
+    list.push(judged, claim.Judged { claim: c, verdict: judge.judge(c, opts)! })
+  }
+
+  let refused = list.filter(judged, (j) => not claim.passed(j.verdict) and
+    not (lenient and claim.tag(j.verdict) == "unverifiable"))
+
+  if not quiet then {
+    for j in judged {
+      println(line(j))
+    }
+    println("")
+    println("${int.to_string(list.len(judged))} 件中 ${int.to_string(list.len(refused))} 件を止めた")
+  } else ()
+
+  match opt(args, "--report") {
+    none => (),
+    some(path) => match fs.write(path, report.render(judged)) {
+      ok(_) => if not quiet then println("report: ${path}") else (),
+      err(e) => println("report を書けない: ${e}"),
+    },
+  }
+
+  process.exit(if list.is_empty(refused) then 0 else 1)
+}

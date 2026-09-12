@@ -1,0 +1,90 @@
+// The gate.
+//
+// The order of the checks is the whole design. A claim with no source is refused
+// before anything is fetched, and a claim with nothing checkable is refused
+// before that — there is no point spending a request to learn that the answer
+// would have been "cannot tell" either way.
+//
+// A figure counts as found if it appears on any one of the cited pages. Sources
+// are treated as a set, not a ranking: a claim that cites two pages and takes
+// one figure from each is supported.
+//
+// Only pages that answered are searched. A citation that 403s leaves the claim
+// unreachable rather than unsupported, because the two call for different
+// actions — one is a source problem, the other a claim problem.
+
+import self.claim
+import self.tokens
+import self.fetch
+
+type Opts = { timeout_ms: Int, min_digits: Int }
+
+local type Fetched = { url: String, text: String }
+
+fn default_opts() -> Opts = Opts { timeout_ms: 15000, min_digits: 3 }
+
+// The page that accounted for the most figures, so the report names the source
+// a reader should open first.
+local fn best_source(pages: List[Fetched], figures: List[String]) -> String = {
+  var best = ""
+  var best_hits = 0 - 1
+  for p in pages {
+    let hits = list.len(list.filter(figures, (f) => string.contains(p.text, f)))
+    if hits > best_hits then {
+      best_hits = hits
+      best = p.url
+    } else ()
+  }
+  best
+}
+
+effect fn judge(c: claim.Claim, o: Opts) -> claim.Verdict = {
+  let figures = tokens.figures(c.text, o.min_digits)
+  if list.is_empty(c.citations) then claim.NoCitation
+  else if list.is_empty(figures) then
+    claim.Unverifiable { reason: "検査できる数値がない（v0 は数値しか照合しない）" }
+  else {
+    var pages: List[Fetched] = []
+    var first_failed_url = ""
+    var first_failed_detail = ""
+    for url in c.citations {
+      match fetch.page_text(url, o.timeout_ms) {
+        ok(text) => list.push(pages, Fetched { url: url, text: text }),
+        err(detail) => {
+          if first_failed_url == "" then {
+            first_failed_url = url
+            first_failed_detail = detail
+          } else ()
+        },
+      }
+    }
+    if list.is_empty(pages) then
+      claim.Unreachable { url: first_failed_url, detail: first_failed_detail }
+    else {
+      let found = list.filter(figures, (f) => list.any(pages, (p) => string.contains(p.text, f)))
+      let missing = list.filter(figures, (f) => not list.any(pages, (p) => string.contains(p.text, f)))
+      if list.is_empty(missing) then
+        claim.Supported { matched: figures, source: best_source(pages, figures) }
+      else
+        claim.Unsupported { missing: missing, matched: found, checked: figures }
+    }
+  }
+}
+
+test "a claim with no source is refused without a fetch" {
+  let c = claim.Claim { id: "c1", text: "売上は53.3%増", citations: [] }
+  assert_eq(claim.tag(judge(c, default_opts())!), "no_citation")
+}
+
+test "a claim with nothing checkable is refused, not passed" {
+  let c = claim.Claim { id: "c2", text: "市場は好調だった", citations: ["https://example.com"] }
+  assert_eq(claim.tag(judge(c, default_opts())!), "unverifiable")
+}
+
+test "the source with the most figures is the one reported" {
+  let pages = [
+    Fetched { url: "https://a", text: "53.3" },
+    Fetched { url: "https://b", text: "53.3 and 10.1" },
+  ]
+  assert_eq(best_source(pages, ["53.3", "10.1"]), "https://b")
+}

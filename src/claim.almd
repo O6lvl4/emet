@@ -1,0 +1,51 @@
+// The vocabulary of the gate.
+//
+// A claim passes only when every checkable figure in it was found on a page it
+// cites. Everything else is a refusal that says why, because a gate that only
+// says no cannot be acted on — the caller has to know whether to add a source,
+// fix a number, or ask a person.
+//
+// `Unverifiable` is deliberately not a pass. It is the answer for a claim this
+// tool has no way to check, and the whole point is that it says so instead of
+// letting it through.
+
+type Claim = { id: String, text: String, citations: List[String] }
+
+type Verdict =
+  | Supported{ matched: List[String], source: String }
+  | NoCitation
+  | Unreachable{ url: String, detail: String }
+  | Unsupported{ missing: List[String], matched: List[String], checked: List[String] }
+  | Unverifiable{ reason: String }
+
+type Judged = { claim: Claim, verdict: Verdict }
+
+fn passed(v: Verdict) -> Bool = match v {
+  Supported{ matched, source } => true,
+  _ => false,
+}
+
+// The single lowercase word that names a verdict in the report and on stdout.
+// Kept in one place so the two never drift.
+fn tag(v: Verdict) -> String = match v {
+  Supported{ matched, source } => "supported",
+  NoCitation => "no_citation",
+  Unreachable{ url, detail } => "unreachable",
+  Unsupported{ missing, matched, checked } => "unsupported",
+  Unverifiable{ reason } => "unverifiable",
+}
+
+fn reason(v: Verdict) -> String = match v {
+  Supported{ matched, source } => source,
+  NoCitation => "出典が付いていない",
+  Unreachable{ url, detail } => "${url}: ${detail}",
+  Unsupported{ missing, matched, checked } => "裏が取れない数値 " + int.to_string(list.len(missing)) + "/" + int.to_string(list.len(checked)) + ": " + string.join(missing, ", "),
+  Unverifiable{ reason } => reason,
+}
+
+test "supported passes, everything else does not" {
+  assert(passed(Supported { matched: ["53.3"], source: "https://example.com" }))
+  assert_eq(passed(NoCitation), false)
+  assert_eq(passed(Unverifiable { reason: "x" }), false)
+  assert_eq(tag(NoCitation), "no_citation")
+}

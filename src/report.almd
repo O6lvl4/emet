@@ -1,0 +1,77 @@
+// The report.
+//
+// This file is the reason the tool is worth building before the rest of the
+// pipeline: every refusal it records is one row of the calibration set that a
+// conformal threshold is later fitted on, and one example for training a model
+// to abstain. So the shape is designed and flat rather than derived — the format
+// has to stay readable by whatever reads it next, which is not this program.
+//
+// One line per claim, the verdict named by the same word that goes to stdout,
+// and always the figures that were checked, so a later reader can tell a claim
+// that passed on one figure from one that passed on six.
+
+import json
+import self.claim
+
+let VERSION = "0.1.0"
+
+local fn strs(xs: List[String]) -> Value = value.array(list.map(xs, (s) => value.str(s)))
+
+local fn claim_value(j: claim.Judged) -> Value = {
+  var fields = [
+    ("id", value.str(j.claim.id)),
+    ("verdict", value.str(claim.tag(j.verdict))),
+    ("text", value.str(j.claim.text)),
+    ("citations", strs(j.claim.citations)),
+  ]
+  match j.verdict {
+    Supported{ matched, source } => {
+      list.push(fields, ("checked", strs(matched)))
+      list.push(fields, ("matched", strs(matched)))
+      list.push(fields, ("source", value.str(source)))
+    },
+    Unsupported{ missing, matched, checked } => {
+      list.push(fields, ("checked", strs(checked)))
+      list.push(fields, ("matched", strs(matched)))
+      list.push(fields, ("missing", strs(missing)))
+    },
+    Unreachable{ url, detail } => {
+      list.push(fields, ("url", value.str(url)))
+      list.push(fields, ("detail", value.str(detail)))
+    },
+    Unverifiable{ reason } => list.push(fields, ("detail", value.str(reason))),
+    NoCitation => (),
+  }
+  value.object(fields)
+}
+
+fn build(judged: List[claim.Judged]) -> Value = {
+  let supported = list.len(list.filter(judged, (j) => claim.passed(j.verdict)))
+  value.object([
+    ("tool", value.str("emet")),
+    ("version", value.str(VERSION)),
+    ("total", value.int(list.len(judged))),
+    ("supported", value.int(supported)),
+    ("refused", value.int(list.len(judged) - supported)),
+    ("claims", value.array(list.map(judged, (j) => claim_value(j)))),
+  ])
+}
+
+fn render(judged: List[claim.Judged]) -> String = json.stringify_pretty(build(judged))
+
+test "the report counts refusals separately from passes" {
+  let judged = [
+    claim.Judged {
+      claim: claim.Claim { id: "a", text: "53.3%", citations: ["https://a"] },
+      verdict: claim.Supported { matched: ["53.3"], source: "https://a" },
+    },
+    claim.Judged {
+      claim: claim.Claim { id: "b", text: "7.7859兆", citations: ["https://b"] },
+      verdict: claim.Unsupported { missing: ["7.7859"], matched: [], checked: ["7.7859"] },
+    },
+  ]
+  let out = render(judged)
+  assert(string.contains(out, "\"supported\": 1"))
+  assert(string.contains(out, "\"refused\": 1"))
+  assert(string.contains(out, "\"missing\""))
+}

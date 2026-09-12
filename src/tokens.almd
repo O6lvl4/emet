@@ -1,0 +1,84 @@
+// What in a claim can actually be checked against a page.
+//
+// v0 checks figures and nothing else. A figure is a run of digits with the
+// separators that appear inside numbers, so "NT$5148.1億" yields "5148.1" and
+// "前年同月比53.3%増" yields "53.3".
+//
+// Short runs are dropped. "9" matches by accident on almost any page, and a
+// token that always matches tells the gate nothing — it only costs a fetch.
+// The floor is on digits, not length, so "53.3" (three digits) is kept and
+// "1.5" is not.
+//
+// Commas come out of both the claim and the page, so "5,148" and "5148" are
+// the same figure on either side. That also means "12,34" reads as "1234",
+// which can match a claim it should not. It is the cheapest normalisation that
+// handles thousands separators, and a false match here still needs every other
+// figure in the claim to land.
+
+fn is_num_char(c: String) -> Bool = string.is_digit(c) or c == "." or c == ","
+
+fn digit_count(s: String) -> Int = list.len(list.filter(string.chars(s), (c) => string.is_digit(c)))
+
+// Drop separators that ended up on an edge: the run taken from "2026年" is
+// "2026", and the one from "率は53.3%。" must not keep its trailing dot.
+fn trim_seps(s: String) -> String = {
+  let cs = string.chars(s)
+  var a = 0
+  var b = list.len(cs)
+  while a < b and not string.is_digit(list.get(cs, a) ?? "") {
+    a = a + 1
+  }
+  while b > a and not string.is_digit(list.get(cs, b - 1) ?? "") {
+    b = b - 1
+  }
+  string.join(list.slice(cs, a, b), "")
+}
+
+// Lowercase, and commas out. Applied to the claim and to every page, so the
+// two sides are always compared in the same shape.
+fn normalize(s: String) -> String = string.replace(string.to_lower(s), ",", "")
+
+fn runs(text: String) -> List[String] = {
+  var out: List[String] = []
+  var cur = ""
+  for c in string.chars(text) {
+    if is_num_char(c) then {
+      cur = cur + c
+    } else {
+      if cur != "" then list.push(out, cur) else ()
+      cur = ""
+    }
+  }
+  if cur != "" then list.push(out, cur) else ()
+  out
+}
+
+// The figures worth checking, deduplicated and in the order they appear.
+fn figures(text: String, min_digits: Int) -> List[String] = {
+  let cleaned = list.map(runs(normalize(text)), (r) => trim_seps(r))
+  list.unique(list.filter(cleaned, (f) => digit_count(f) >= min_digits))
+}
+
+test "figures come out of prose with their units attached" {
+  assert_eq(figures("前年同月比53.3%増", 3), ["53.3"])
+  assert_eq(figures("NT$5148.1億で前月比10.1%増", 3), ["5148.1", "10.1"])
+  assert_eq(figures("2026年9月10日", 3), ["2026"])
+}
+
+test "short runs are dropped, long ones kept" {
+  assert_eq(figures("9人が1.5倍に", 3), [])
+  assert_eq(figures("129.8%の黒字", 3), ["129.8"])
+}
+
+test "commas are normalised away on the claim side too" {
+  assert_eq(figures("5,148億円", 3), ["5148"])
+}
+
+test "a figure repeated in one claim is checked once" {
+  assert_eq(figures("53.3%増、つまり53.3ポイント", 3), ["53.3"])
+}
+
+test "edge separators are trimmed" {
+  assert_eq(trim_seps("53.3."), "53.3")
+  assert_eq(trim_seps(".2026"), "2026")
+}

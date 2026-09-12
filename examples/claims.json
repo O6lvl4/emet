@@ -1,0 +1,35 @@
+{
+  "_comment": "Six claims chosen to produce all five verdicts against live sources. The two 'wrong' ones are wrong on purpose.",
+  "claims": [
+    {
+      "id": "glm-flash",
+      "text": "GLM-5.3-Flash の重みは総パラメータ321323031390で、MIT ライセンスで公開されている。",
+      "citations": ["https://huggingface.co/api/models/zai-org/GLM-5.3-Flash"]
+    },
+    {
+      "id": "glm-max",
+      "text": "GLM-5.3 本体は総パラメータ753329940480で、ライセンスは MIT ではない。",
+      "citations": ["https://huggingface.co/api/models/zai-org/GLM-5.3"]
+    },
+    {
+      "id": "tsmc-aug",
+      "text": "TSMC の8月の月次売上はNT$5148.1億で、前年同月比53.3%増だった。",
+      "citations": ["https://investor.tsmc.com/english/monthly-revenue/2026"]
+    },
+    {
+      "id": "wrong-figures",
+      "text": "GLM-5.3-Flash の総パラメータは7785900000で、活性は5272000000である。",
+      "citations": ["https://huggingface.co/api/models/zai-org/GLM-5.3-Flash"]
+    },
+    {
+      "id": "no-figures",
+      "text": "オープンウェイトモデルの実務遂行能力は最上位クローズドに迫っている。",
+      "citations": ["https://huggingface.co/api/models/zai-org/GLM-5.3"]
+    },
+    {
+      "id": "no-source",
+      "text": "Kimi K3 の AA-Omniscience 幻覚率は51%だった。",
+      "citations": []
+    }
+  ]
+}
