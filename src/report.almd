@@ -17,6 +17,13 @@ let VERSION = "0.1.0"
 
 local fn strs(xs: List[String]) -> Value = value.array(list.map(xs, (s) => value.str(s)))
 
+// Probes go out as {kind, value} pairs, not bare strings. A later reader has to
+// be able to tell "the number was absent" from "the quote was never said" —
+// that distinction is the retry instruction, and flattening it away would make
+// the calibration set unusable for the thing it exists for.
+local fn probe_rows(ps: List[claim.Probe]) -> Value =
+  value.array(list.map(ps, (p) => value.object([("kind", value.str(p.kind)), ("value", value.str(p.value))])))
+
 local fn claim_value(j: claim.Judged) -> Value = {
   var fields = [
     ("id", value.str(j.claim.id)),
@@ -26,20 +33,24 @@ local fn claim_value(j: claim.Judged) -> Value = {
   ]
   match j.verdict {
     Supported{ matched, source } => {
-      list.push(fields, ("checked", strs(matched)))
-      list.push(fields, ("matched", strs(matched)))
+      list.push(fields, ("checked", probe_rows(matched)))
+      list.push(fields, ("matched", probe_rows(matched)))
       list.push(fields, ("source", value.str(source)))
     },
     Unsupported{ missing, matched, checked } => {
-      list.push(fields, ("checked", strs(checked)))
-      list.push(fields, ("matched", strs(matched)))
-      list.push(fields, ("missing", strs(missing)))
+      list.push(fields, ("checked", probe_rows(checked)))
+      list.push(fields, ("matched", probe_rows(matched)))
+      list.push(fields, ("missing", probe_rows(missing)))
+      list.push(fields, ("repair", value.str(claim.repair(j.verdict))))
     },
     Unreachable{ url, detail } => {
       list.push(fields, ("url", value.str(url)))
       list.push(fields, ("detail", value.str(detail)))
     },
-    Unverifiable{ reason } => list.push(fields, ("detail", value.str(reason))),
+    Unverifiable{ reason } => {
+      list.push(fields, ("detail", value.str(reason)))
+      list.push(fields, ("repair", value.str(claim.repair(j.verdict))))
+    },
     NoCitation => (),
   }
   value.object(fields)
@@ -63,11 +74,14 @@ test "the report counts refusals separately from passes" {
   let judged = [
     claim.Judged {
       claim: claim.Claim { id: "a", text: "53.3%", citations: ["https://a"] },
-      verdict: claim.Supported { matched: ["53.3"], source: "https://a" },
+      verdict: claim.Supported { matched: [claim.probe("figure", "53.3")], source: "https://a" },
     },
     claim.Judged {
       claim: claim.Claim { id: "b", text: "7.7859兆", citations: ["https://b"] },
-      verdict: claim.Unsupported { missing: ["7.7859"], matched: [], checked: ["7.7859"] },
+      verdict: claim.Unsupported {
+        missing: [claim.probe("figure", "7.7859")], matched: [],
+        checked: [claim.probe("figure", "7.7859")],
+      },
     },
   ]
   let out = render(judged)

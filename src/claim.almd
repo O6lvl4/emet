@@ -1,15 +1,35 @@
 // The vocabulary of the gate.
 //
-// A claim passes only when every checkable figure in it was found on a page it
-// cites. Everything else is a refusal that says why, because a gate that only
-// says no cannot be acted on — the caller has to know whether to add a source,
-// fix a number, or ask a person.
+// A claim passes only when every probe in it was found on a page it cites.
+// Everything else is a refusal that says why, because a gate that only says no
+// cannot be acted on — the caller has to know whether to add a source, fix a
+// number, drop a quote, or ask a person.
+//
+// That last part is what makes this usable inside a loop rather than only at the
+// end of one. A refusal names the probes that gave way and their kinds, which is
+// a repair instruction: the same role a compiler diagnostic plays for code. On a
+// task with no compiler, this is the only such signal there is.
 //
 // `Unverifiable` is deliberately not a pass. It is the answer for a claim this
 // tool has no way to check, and the whole point is that it says so instead of
 // letting it through.
 
 type Claim = { id: String, text: String, citations: List[String] }
+
+// One thing in a claim that can be looked for on a page, and what kind of thing
+// it is. The kind is not decoration: a wrong number, a quote never said, and a
+// source about a different company are three different repairs.
+type Probe = { kind: String, value: String }
+
+fn probe(kind: String, value: String) -> Probe = Probe { kind: kind, value: value }
+
+fn probe_values(ps: List[Probe]) -> List[String] = list.map(ps, (p) => p.value)
+
+// "figure 53.3, quote 過去最高" — what goes in a refusal message.
+fn show_probes(ps: List[Probe]) -> String =
+  string.join(list.map(ps, (p) => p.kind + " " + p.value), ", ")
+
+fn of_kind(ps: List[Probe], kind: String) -> List[Probe] = list.filter(ps, (p) => p.kind == kind)
 
 // One source, after someone tried to read it. `error` empty means `text` is the
 // page; otherwise `text` is empty and `error` says why.
@@ -23,10 +43,10 @@ type Attempt = { url: String, text: String, error: String }
 fn ok_page(a: Attempt) -> Bool = a.error == ""
 
 type Verdict =
-  | Supported{ matched: List[String], source: String }
+  | Supported{ matched: List[Probe], source: String }
   | NoCitation
   | Unreachable{ url: String, detail: String }
-  | Unsupported{ missing: List[String], matched: List[String], checked: List[String] }
+  | Unsupported{ missing: List[Probe], matched: List[Probe], checked: List[Probe] }
   | Unverifiable{ reason: String }
 
 type Judged = { claim: Claim, verdict: Verdict }
@@ -50,13 +70,60 @@ fn reason(v: Verdict) -> String = match v {
   Supported{ matched, source } => source,
   NoCitation => "出典が付いていない",
   Unreachable{ url, detail } => "${url}: ${detail}",
-  Unsupported{ missing, matched, checked } => "裏が取れない数値 " + int.to_string(list.len(missing)) + "/" + int.to_string(list.len(checked)) + ": " + string.join(missing, ", "),
+  Unsupported{ missing, matched, checked } =>
+    "裏が取れない " + int.to_string(list.len(missing)) + "/" + int.to_string(list.len(checked)) + ": " + show_probes(missing),
   Unverifiable{ reason } => reason,
 }
 
+// What a caller should do about it, in the imperative. This is the field a retry
+// loop reads: a refusal is only useful if the next attempt can be different
+// because of it.
+fn repair(v: Verdict) -> String = match v {
+  Supported{ matched, source } => "",
+  NoCitation => "出典URLを付けてから再提出する",
+  Unreachable{ url, detail } => "別の出典に差し替える（この出典は読めない）",
+  Unsupported{ missing, matched, checked } => {
+    let figs = of_kind(missing, "figure")
+    let quos = of_kind(missing, "quote")
+    let ents = of_kind(missing, "entity")
+    string.join(list.filter([
+      match list.is_empty(ents) { true => "", false => "この出典は " + show_probes(ents) + " について述べていない。主題の合う出典に差し替える" },
+      match list.is_empty(quos) { true => "", false => "引用 " + show_probes(quos) + " が出典に存在しない。逐語でない引用を外す" },
+      match list.is_empty(figs) { true => "", false => "数値 " + show_probes(figs) + " が出典にない。出典の単位・桁のまま書き直すか、その数値を出す出典を引く" },
+    ], (s) => s != ""), " / ")
+  },
+  Unverifiable{ reason } => "照合できる手がかり（数値・逐語引用・固有名）を主張に含める",
+}
+
 test "supported passes, everything else does not" {
-  assert(passed(Supported { matched: ["53.3"], source: "https://example.com" }))
+  assert(passed(Supported { matched: [probe("figure", "53.3")], source: "https://example.com" }))
   assert_eq(passed(NoCitation), false)
   assert_eq(passed(Unverifiable { reason: "x" }), false)
   assert_eq(tag(NoCitation), "no_citation")
+}
+
+test "a refusal names the probes that gave way, with their kinds" {
+  let v = Unsupported {
+    missing: [probe("figure", "5148.1")],
+    matched: [probe("figure", "53.3")],
+    checked: [probe("figure", "5148.1"), probe("figure", "53.3")],
+  }
+  assert_eq(reason(v), "裏が取れない 1/2: figure 5148.1")
+}
+
+test "the repair instruction is specific to the kind that failed" {
+  let ent = Unsupported { missing: [probe("entity", "TSMC")], matched: [], checked: [probe("entity", "TSMC")] }
+  assert(string.contains(repair(ent), "主題の合う出典"))
+  let quo = Unsupported { missing: [probe("quote", "過去最高")], matched: [], checked: [probe("quote", "過去最高")] }
+  assert(string.contains(repair(quo), "逐語でない引用"))
+  assert_eq(repair(Supported { matched: [], source: "u" }), "")
+}
+
+test "several failed kinds produce several instructions" {
+  let v = Unsupported {
+    missing: [probe("figure", "1.23"), probe("entity", "ACME")],
+    matched: [],
+    checked: [probe("figure", "1.23"), probe("entity", "ACME")],
+  }
+  assert(string.contains(repair(v), " / "))
 }

@@ -1,9 +1,9 @@
 # emet
 
-**A claim moves only while its figures hold.**
+**A claim moves only while its evidence holds.**
 
-`emet` reads claims with their sources, checks every figure in each claim against
-the pages it cites, and answers with an exit status. Nothing else. Whatever runs
+`emet` reads claims with their sources, checks every figure, quotation and name in
+each claim against the pages it cites, and answers with an exit status. Nothing else. Whatever runs
 it decides what to do — the tool takes no position beyond whether the claim stood
 up.
 
@@ -102,8 +102,8 @@ Needs [Almide](https://github.com/almide/almide) 0.62 or newer.
 ```
 almide build src/main.almd -o emet     # single native binary (2.8 MB)
 almide run src/main.almd claims.json   # or run in place
-almide test src/main.almd              # 24 tests
-almide test src/worker.almd            # 22 tests
+almide test src/main.almd              # 44 tests
+almide test src/worker.almd            # 42 tests
 ```
 
 ## Usage
@@ -128,6 +128,29 @@ Input:
 ```
 
 Exit `0` every claim supported · `1` something refused · `2` bad input.
+
+## What gets checked
+
+Three kinds of probe, and there are three because they fail independently — a claim
+can carry a right number about the wrong company, or a real quote with an invented
+figure attached.
+
+| | catches |
+|---|---|
+| `figure` a run of digits | invented quantities |
+| `quote` a 「…」 or "…" span | words never said |
+| `entity` a capitalised latin run | a source that is about someone else |
+
+A claim that mentions something **in order to deny it** yields no probe for it:
+"GLM-5.3 のライセンスは MIT ではない" cites a page that indeed does not say MIT, and a
+gate that refused it would have inverted the claim. Presence-matching cannot check
+an absence, so it does not pretend to. Japanese negation is postpositional and
+English prepositional, so both sides of the mention are inspected.
+
+Katakana is **not** used as a name signal, though it was tried: it carries every
+loanword, so `[ァ-ヶー]{3,}` extracted パラメータ, ライセンス and クローズド and then refused
+correct claims. Kanji names are not extracted either — there is no boundary to find
+without a tokeniser, and guessing one invents probes rather than finding them.
 
 ## What a figure is
 
@@ -183,44 +206,80 @@ it next, which is not this program.
 ## Measured
 
 115 entries of a real timeline ([chip-war-chronicle](https://github.com/O6lvl4/chip-war-chronicle),
-every 5th of 574, so the sample spans 2018–2026 and all six of its lanes), each
-one a claim written from the source it cites. Two runs, before and after the
-figure rule learned to skip years:
+every 5th of 574, spanning 2018–2026 and all six of its lanes), each one a claim
+written from the source it cites. Four runs, each one a change the previous run
+forced:
 
-| verdict | first run | after | |
-|---|---|---|---|
-| `supported` | 28 | **18** | −10 |
-| `unsupported` | 45 | 39 | −6 |
-| `unverifiable` | 36 | **55** | +19 |
-| `unreachable` | 6 | **3** | −3 |
+| | figures only | + quote/entity | entity advisory | + multi-word names |
+|---|---|---|---|---|
+| `supported` | 28 | 27 | 20 | **21** |
+| `unsupported` | 45 | 72 | 50 | **77** |
+| `unverifiable` | 36 | **11** | 40 | **11** |
+| `unreachable` | 6 | 5 | 5 | **5** |
+| **abstention** | 36.5% | 13.9% | 39.1% | **14.0%** |
 
-Three things came out of this, and only one of them was expected.
+**Quotes and names are what make prose checkable.** Abstention fell from 36.5% to
+14.0% — 44 claims that figures alone could not judge at all became judgeable. That
+is the one result that came out as intended.
 
-**Ten of the 28 passes were spurious.** They were vouched for by a *year*
+**Ten of the original 28 passes were spurious.** They were vouched for by a *year*
 matching — `2019` in the claim, `2019` somewhere on the page — and nothing else.
-Over a third of everything the gate let through was resting on no evidence at all.
-Excluding years is what moved 19 claims into `unverifiable`: the gate stopped
-pretending to check them. The worse-looking column is the correct one.
+Excluding years (`is_year`) cost 10 passes that were resting on no evidence.
+
+**Entity probes cannot be made reliable by tuning, and the measurement says so
+four times.** Of 283 entity probes, 96 fail, and inspecting them shows the failures
+are mostly the extractor's: domain vocabulary read as names (GPU, DRAM, NAND, IoT,
+HPC, MoE, G20), and product names a source renders differently (Rubin, BiCS, A12).
+Two attempts to fix it both made something worse:
+
+- *Demoting entity to advisory* moved abstention from 13.9% to **39.1%** — worse,
+  because an entity is the only probe many claims have, so removing it from the
+  decision removes the claim from being checkable. It also opened a false pass: a
+  right figure on a page about a different company went green.
+- *Spanning multi-word names* is semantically right — "Western Digital" is one name,
+  not two probes — and lowered the entity hit rate from 71% to 66%, because sources
+  write "WD". It is kept anyway: matching the fragment "Western" is a false-pass
+  mechanism, and the same reasoning that excluded years applies here.
+
+And one case no extractor can fix: a claim about TSMC citing TSMC's own press
+release does not need the string "TSMC" in the body, because TSMC is the publisher.
+
+The conclusion is in [DESIGN.md](./DESIGN.md): a binary all-or-nothing per probe
+kind is the wrong instrument. An entity miss is weaker evidence than a figure miss,
+and nothing here can say "weaker". That is what the conformal step is for, and why
+this choice is undecidable without it.
 
 **Redirects were refusing correct claims.** Newsrooms answer 302 —
 `news.samsung.com`, `ir.amd.com`, `www.intc.com`, `news.skhynix.com` — and
-`--timeout-ms` was being parsed and then dropped on the floor rather than written
-to the env knob that actually governs the read. Fixing both took `unreachable`
-from 6 to 3, and the 3 that remain are a genuine `sec.gov` 403 and two slow hosts.
+`--timeout-ms` was parsed and then dropped rather than written to the env knob that
+governs the read. Fixing both took `unreachable` from 6 to 3; it is 5 here because
+two slow hosts moved.
 
-**Only about a sixth of the corpus is checkable this way.** 55 of 115 entries
-carry no figure that literal matching can verify, and most of the 39 refusals are
-the unit-conversion case above rather than anything wrong with the claim. That is
-the honest ceiling on citation coverage alone, and it is the whole argument for
-the two signals below: they need a model, but they apply to prose.
+**Figures still cannot follow unit conversion or rounding.** A claim reading
+`TSMC の8月の月次売上はNT$5148.1億で、前年同月比53.3%増` cites TSMC's own monthly revenue
+page. `emet` finds `53.3` and refuses on `5148.1`: TSMC reports in NT$ thousands, so
+the figure as written appears nowhere on it, in any scale, because it is also
+rounded. The workable discipline is the reverse — **quote figures in the units the
+source uses** — and it is the intended constraint.
 
-One caveat on the runs themselves: one pass died in an Almide runtime panic
-(`end byte index … is not a char boundary`, inside a `\u{fffd}`) on a page with
-invalid UTF-8, and did not reproduce on the next. `string.index_of`, `slice` and
-`drop` were checked and agree on char indices, so this looks like it belongs
-upstream rather than here.
+### Known crash
 
-## Not built yet
+One citation (`si-2`, a `tsmc.com` blog URL) aborts the process:
+
+```
+thread 'main' panicked: end byte index 57647 is not a char boundary;
+it is inside '\u{fffd}' (bytes 57645..57648 of string)
+```
+
+The page contains invalid UTF-8. `fs.read_text` refuses such input outright; the
+HTTP client decodes it lossily, so the string arrives carrying replacement
+characters. Normalising before any index is taken (so every offset comes from the
+string it cuts) did not clear it, and a synthetic invalid-UTF-8 page served over
+HTTP does not reproduce it. A pure-regex rewrite of the page path was tried and
+reverted — it overflowed the stack on a 200 KB page. The 114-entry column above
+excludes this one claim.
+
+## Not built yet## Not built yet
 
 v0 checks citation coverage and nothing else. The two signals that go with it —
 self-consistency across repeated samples, and stability across paraphrases of the

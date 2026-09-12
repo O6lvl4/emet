@@ -14,13 +14,22 @@ import self.tokens
 // which is a refusal rather than a false pass — the safe direction for a gate.
 let MAX_CHARS = 1000000
 
+// Searching and slicing run over the same string. The previous spelling searched a
+// `string.to_lower` copy and cut the original, which is wrong whenever case folding
+// is not length preserving — and a fetched body can carry replacement characters,
+// because the HTTP client decodes invalid UTF-8 lossily where `fs.read_text`
+// refuses the file outright. Normalising first removes the divergence.
+//
+// A pure-regex version of this file was tried and reverted: `(?s)<script.*?>` over a
+// 200 KB page overflowed the stack, and the tag pass trapped on wasm. Bounded index
+// walking is the version that survives real pages.
 local fn drop_blocks(src: String, open_tag: String, close_tag: String) -> String =
-  match string.index_of(string.to_lower(src), open_tag) {
+  match string.index_of(src, open_tag) {
     none => src,
     some(i) => {
       let head = string.slice(src, 0, i)
       let rest = string.drop(src, i)
-      match string.index_of(string.to_lower(rest), close_tag) {
+      match string.index_of(rest, close_tag) {
         none => head,
         some(j) => head + " " + drop_blocks(string.drop(rest, j + string.len(close_tag)), open_tag, close_tag),
       }
@@ -45,8 +54,10 @@ local fn strip_tags(src: String) -> String = {
   string.join(parts, "")
 }
 
+// Normalised first: tag names are ASCII, so folding case up front costs nothing and
+// gives every index below the same string it was found in.
 fn text_of(doc: String) -> String =
-  tokens.normalize(strip_tags(drop_blocks(drop_blocks(string.take(doc, MAX_CHARS), "<script", "</script>"), "<style", "</style>")))
+  strip_tags(drop_blocks(drop_blocks(tokens.normalize(string.take(doc, MAX_CHARS)), "<script", "</script>"), "<style", "</style>"))
 
 test "tags go, and leave a boundary where they were" {
   assert_eq(text_of("<td>53</td><td>3</td>"), " 53  3 ")

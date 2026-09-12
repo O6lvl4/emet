@@ -1,0 +1,193 @@
+// What in a claim can be looked for on a page, without asking a model anything.
+//
+// Three kinds, and the reason there are three is that they fail independently.
+// A claim can carry a right number about the wrong company, or a real quote with
+// an invented figure attached. One kind of probe cannot see the other's failure,
+// so the gate needs all of them and a refusal has to say which one gave way.
+//
+//   figure  a run of digits          catches invented quantities
+//   quote   a 「…」 or "…" span       catches words never said
+//   entity  a name                   catches a source that is about someone else
+//
+// Every one of these is a string lookup. Nothing here has an opinion, which is
+// the point: a gate that asks a model whether a claim is grounded inherits the
+// calibration problem it exists to fix.
+
+import regex
+import self.claim
+import self.tokens
+
+// Quotes are the strongest probe available without a model — the claim asserts
+// these exact words appeared, and that is checkable literally. Short spans are
+// dropped: a two-character quote matches anything.
+let MIN_QUOTE = 4
+
+// Names shorter than this match too much ("EU" is inside "EUR", "AI" everywhere).
+// Acronym-only sources lose a probe, which costs a check rather than adding a
+// false one.
+let MIN_ENTITY = 3
+
+local fn long_enough(xs: List[String], n: Int) -> List[String] =
+  list.unique(list.filter(list.map(xs, (s) => string.trim(s)), (s) => string.len(s) >= n))
+
+// Japanese corner brackets and straight double quotes. The inner pattern is
+// negated rather than lazy so a run of quotes does not swallow the text between
+// two of them.
+fn quotes(text: String) -> List[String] =
+  long_enough(list.map(regex.find_all("「[^」]+」", text), (q) => string.slice(q, 1, string.len(q) - 1))
+    + list.map(regex.find_all("\"[^\"]+\"", text), (q) => string.slice(q, 1, string.len(q) - 1)), MIN_QUOTE)
+
+// Two things a name can look like here, both recognisable without a dictionary:
+// a capitalised or all-caps latin run: TSMC, NVIDIA, Micron, ASML. Inside
+// Japanese prose a latin run is almost always a name or an acronym, which makes
+// it usable with no dictionary.
+//
+// Katakana is **not** such a signal, and trying it was a mistake worth recording.
+// Katakana carries every loanword, not only names, so `[ァ-ヶー]{3,}` extracted
+// パラメータ, ライセンス, クローズド and オープンウェイトモデル, then refused correct claims
+// because a source stating the same fact had not used the same loanword. On the
+// six-claim example it turned 2 passes into 0. Recall on サムスン and エヌビディア is
+// not worth that, and the fix is a tokeniser, not a character class.
+//
+// Kanji names are not extracted either — there is no boundary to find without a
+// tokeniser, and guessing one would invent probes rather than find them.
+// Multi-word names are one probe, not several. `[A-Z]…` alone split "Western
+// Digital" into "Western" and "Digital" and "Fab 6" into "Fab", then refused
+// claims because a fragment was missing. The trailing group spans the rest of the
+// name.
+fn entities(text: String) -> List[String] =
+  long_enough(regex.find_all("[A-Z][A-Za-z0-9&.-]{2,}( [A-Z][A-Za-z0-9&.-]+)*", text), MIN_ENTITY)
+
+// Which probes decide the verdict.
+//
+// Figures and quotes are literal assertions the claim makes: it says this number
+// is the number, these words were said. Their absence from the source is the
+// claim's problem.
+//
+// Entity presence is not that, and the measurement says so. Over 115 timeline
+// entries the entity class produced 290 of 440 probes and 84 refusals, and
+// inspecting them showed the failures were mostly the extractor's fault, not the
+// claim's: domain vocabulary read as names (GPU, DRAM, NAND, IoT, HPC, MoE, G20),
+// and product names a source renders differently (Rubin, BiCS, A12).
+//
+// And one case no extractor can fix: a claim about TSMC citing TSMC's own press
+// release does not need the string "TSMC" in the body, because TSMC is the
+// publisher. Presence of a name is weak evidence for a citation in a way that a
+// figure and a quote are not.
+//
+// Demoting entity to advisory was tried and reverted. Measured over the same 115
+// entries it moved abstention from 13.9% to 39.1% — worse on the cost function,
+// because an entity is the only probe many claims have, so dropping it from the
+// decision drops the claim out of being checkable at all. And it introduced a
+// false pass: a right figure on a page about a different company went green.
+//
+// For a gate a false pass is the primary sin, so entity stays decisive and the
+// extraction noise stays a known cost.
+//
+// The real resolution is not either of these settings. A binary all-or-nothing
+// per probe kind is the problem: an entity miss is weaker evidence than a figure
+// miss, and nothing here can say "weaker". A conformal bound fitted on a joint
+// score can weight the kinds, which is why it is step 3 of DESIGN.md and not an
+// optional extra — this exact choice is undecidable without it.
+fn decisive(ps: List[claim.Probe]) -> List[claim.Probe] = ps
+
+// A probe asserts that something is present in the source. A claim that mentions
+// something in order to deny it asserts the opposite, and presence-matching
+// cannot check that — so no probe is made for it.
+//
+// This is not a special case bolted on. "GLM-5.3 のライセンスは MIT ではない" cites a
+// page that indeed does not say MIT, and a gate that refuses it has inverted the
+// claim. The rule is the same one the whole tool runs on: check what can be
+// checked, and decline to pretend about the rest.
+let NEGATORS = ["ではない", "ではなく", "ではありません", "でない", "とは異なり", " not ", "n't ", " no longer "]
+
+// Both sides of the mention are inspected, because the two languages put the
+// negation on opposite sides: Japanese is postpositional (「MIT ではない」) and
+// English prepositional ("is not MIT"). Checking one window only would catch one
+// language and silently miss the other — the English case is how this was found.
+//
+// The window is short so a negation two clauses away cannot disarm an unrelated
+// probe. When it does misfire the cost is a probe not checked, never a claim
+// wrongly passed.
+let NEG_WINDOW = 12
+
+local fn negated(value: String, text: String) -> Bool =
+  match string.index_of(text, value) {
+    none => false,
+    some(i) => {
+      let after = string.take(string.drop(text, i + string.len(value)), NEG_WINDOW)
+      let before = string.take_end(string.take(text, i), NEG_WINDOW)
+      list.any(NEGATORS, (n) => string.contains(after, n) or string.contains(before, n))
+    },
+  }
+
+// Everything checkable in a claim, figures included. Order is figures first so a
+// refusal message leads with the hardest evidence.
+fn of(text: String, min_digits: Int) -> List[claim.Probe] =
+  list.map(list.filter(tokens.figures(text, min_digits), (f) => not negated(f, text)), (f) => claim.probe("figure", f))
+    + list.map(list.filter(quotes(text), (q) => not negated(q, text)), (q) => claim.probe("quote", q))
+    + list.map(list.filter(entities(text), (e) => not negated(e, text)), (e) => claim.probe("entity", e))
+
+// A page is searched in the normalised shape both sides share, so a probe is
+// normalised the same way before it is looked for.
+fn found_on(p: claim.Probe, page_text: String) -> Bool =
+  string.contains(page_text, tokens.normalize(p.value))
+
+test "quotes come out without their brackets" {
+  assert_eq(quotes("社長は「過去最高の需要」と述べた"), ["過去最高の需要"])
+  assert_eq(quotes("said \"record demand\" today"), ["record demand"])
+}
+
+test "two quotes in one claim stay separate" {
+  assert_eq(quotes("「第一の話」と「第二の話」"), ["第一の話", "第二の話"])
+}
+
+test "short quotes are dropped" {
+  assert_eq(quotes("「はい」と答えた"), [])
+}
+
+test "a multi-word name is one probe, not its fragments" {
+  assert_eq(entities("Western Digital が発表"), ["Western Digital"])
+  assert_eq(entities("Texas Instruments と Micron"), ["Texas Instruments", "Micron"])
+}
+
+test "every probe kind decides the verdict" {
+  let ps = of("TSMCは「過去最高」と述べ53.3%増", 3)
+  assert_eq(claim.show_probes(decisive(ps)), "figure 53.3, quote 過去最高, entity TSMC")
+}
+
+test "latin runs are probes; katakana and short runs are not" {
+  assert_eq(entities("TSMC と NVIDIA が合意"), ["TSMC", "NVIDIA"])
+  assert_eq(entities("サムスン電子が発表"), [])
+  assert_eq(entities("EU が承認"), [])
+}
+
+test "kanji names are not guessed at" {
+  assert_eq(entities("経済産業省が認定"), [])
+}
+
+test "a claim yields every kind of probe it carries" {
+  let ps = of("TSMCは「過去最高の需要」と述べ、売上は53.3%増だった", 3)
+  assert_eq(claim.show_probes(ps), "figure 53.3, quote 過去最高の需要, entity TSMC")
+}
+
+test "probes are matched in the shape the page was normalised into" {
+  assert(found_on(claim.probe("figure", "5,148.1"), "revenue 5148.1 ntd"))
+  assert(found_on(claim.probe("entity", "NVIDIA"), "nvidia said"))
+  assert_eq(found_on(claim.probe("quote", "never said this"), "nvidia said"), false)
+}
+
+test "a mention made in order to deny it yields no probe" {
+  // The subject stays a probe — the claim is about GLM-5.3 and the source had
+  // better mention it. Only the denied term drops out.
+  assert_eq(claim.show_probes(of("GLM-5.3 のライセンスは MIT ではない", 3)), "entity GLM-5.3")
+  assert_eq(of("the licence is not MIT here", 3), [])
+}
+
+test "a plain mention still yields its probe" {
+  assert_eq(claim.show_probes(of("GLM-5.3 のライセンスは MIT である", 3)), "entity GLM-5.3, entity MIT")
+}
+
+test "a negation far away does not disarm the probe" {
+  assert(list.any(of("TSMC が発表した。なお別の話だが今回の件は対象ではない", 3), (p) => p.value == "TSMC"))
+}
