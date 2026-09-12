@@ -1,0 +1,26 @@
+{
+ "min_digits": 3,
+ "claims": [
+  {
+   "id": "all-found",
+   "text": "売上は5148.1億で53.3%増",
+   "citations": [
+    "https://a"
+   ]
+  },
+  {
+   "id": "partial",
+   "text": "売上は5148.1億で53.3%増",
+   "citations": [
+    "https://b"
+   ]
+  }
+ ],
+ "pages": [
+  {
+   "url": "https://a",
+   "doc": "<p>NT$5,148.1 and <b>53.3</b>%</p",
+   "error": ""
+  }
+ ]
+}
