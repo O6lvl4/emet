@@ -226,48 +226,71 @@ matters — changing the last digit was the first attempt and it was invalid, be
 53.3 → 53.7 is 0.75% and sits *inside* the 1% rounding tolerance, so a correct
 matcher scored as a miss.
 
-### The curve
+### The curve, four ways
 
-`min_support` is the share of a claim's probes that must be found. 91 of 115
-originals were decided (the rest unverifiable or unreachable).
+`min_support` is the threshold on a claim's support score. 91 of 115 originals were
+decided (the rest unverifiable or unreachable). Each column is a different way of
+scoring the evidence, built in this order because each one was the fix the previous
+measurement asked for:
 
-| min_support | false refusal | detection |
-|---|---|---|
-| 100 | 74.7% | 96.1% |
-| 90 | **72.5%** | **89.5%** |
-| 80 | 65.9% | 47.9% |
-| 70 | 62.6% | 33.3% |
-| 60 | 51.6% | 26.4% |
-| 50 | 42.9% | 10.2% |
-| 25 | 29.7% | 4.8% |
-| 1 | 25.3% | 3.1% |
+| min_support | binary match | + quantity compare | + graded figures | + graded text |
+|---|---|---|---|---|
+| 100 | 78.0% / 100% | 74.7% / 96.1% | 75.8% / 100% | **75.8% / 100%** |
+| 90 | 76.9% / 95.6% | 72.5% / 89.5% | 73.6% / 92.6% | **70.3% / 83.6%** |
+| 80 | 68.1% / 59.7% | 65.9% / 47.9% | 65.9% / 52.1% | **61.5% / 54.9%** |
+| 70 | 62.6% / 45.7% | 62.6% / 33.3% | 61.5% / 34.9% | **57.1% / 32.6%** |
+| 60 | 52.7% / 23.3% | 51.6% / 26.4% | 53.8% / 23.0% | **49.5% / 24.3%** |
+| 25 | 31.9% / 3.5% | 29.7% / 4.8% | 29.7% / 5.4% | **25.3% / 7.1%** |
+| 1 | 27.5% / 2.6% | 25.3% / 3.1% | 25.3% / 1.9% | **22.0% / 1.2%** |
 
-**There is no usable operating point, at any threshold.** The best trade is 72.5%
-false refusal for 89.5% detection. Where false refusal becomes tolerable, detection
-collapses to single digits. A retry loop driven by this would send back three correct
-answers out of four.
+*(false refusal / detection)*
 
-### Why
+**No configuration has a usable operating point.** The best trade available anywhere
+is 61.5% false refusal for 54.9% detection. Where false refusal becomes tolerable,
+detection is in single digits. A retry loop driven by any column here sends back
+roughly three correct answers in five.
 
-Not the matcher, and not the fetcher. On pages carrying real body text, **only 34% of
-claims have every figure present as written**. The rest are not wrong — they restate
-the figure the way a person writing prose does:
+Everything that was tried is in that table, and the total gain from all of it is
+about six points of specificity. That is the result: **not an implementation that
+needs more work, a ceiling.**
+
+### Why the ceiling is there
+
+Three measurements locate it, and none of them is about the code.
+
+**1. Most honest citations do not contain their claim's evidence verbatim.** On pages
+carrying real body text, only **34%** of claims have every figure present as written:
 
 > TSMC reports `NT$514,806,000 thousand`. The claim says `NT$5148.1億`.
 
 A unit multiplier of 10⁵, a rounding to five significant figures, and a thousands
-separator, all at once. `src/numeric.almd` was written for exactly this — figures are
-compared as quantities across powers of ten within 1% — and it is worth 3 points of
-specificity (78.0% → 74.7% at full strictness). Three points.
+separator, all at once. `src/numeric.almd` compares quantities across powers of ten
+within 1% precisely for this, and it is worth **three points**.
 
-**So the finding is about the approach, not the implementation: citation grounding by
-matching measures a property most honest citations do not have.** Two thirds of
-correctly-sourced claims restate their evidence rather than quote it, and no amount
-of tolerance recovers a figure the source never printed in any form.
+**2. Counting probes is structurally biased against well-evidenced claims.** False
+refusal rises with how much evidence a claim carries, because every additional probe
+is another chance to be scored missing:
 
-That is why [DESIGN.md](./DESIGN.md) now lists the generator-side signals as
-**required** rather than next. They ask a different question — was the model stable
-when it produced this — and that question is indifferent to how the source is worded.
+| probes in claim | 1 | 2–3 | 4–6 | 7+ |
+|---|---|---|---|---|
+| false refusal | 70.0% | 69.6% | 81.8% | **85.7%** |
+
+Averaging graded strengths instead of counting matches removes that bias, which is
+what the fourth column does.
+
+**3. And this is the one that closes it.** A corruption changes one probe. An honest
+restatement also changes one probe. So *any* statistic over how many probes are
+missing confounds the two, and grading only widens the gap where the difference is
+numeric — a 1.7× figure scores 0 against a rounding's 100. For a paraphrased quote or
+an aliased name there is no comparable distance, and those are 319 of 440 probes.
+
+**The finding is about the approach, not the implementation: citation grounding by
+matching measures a property most honest citations do not have.**
+
+That is why [DESIGN.md](./DESIGN.md) lists the generator-side signals as **required**
+rather than next. They ask a different question — was the model stable when it
+produced this — and that question is indifferent to how the source is worded. It also
+needs a model, which is where this stops.
 
 ### What the A-group work did establish
 

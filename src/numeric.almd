@@ -84,6 +84,54 @@ fn supported_by(figure_text: String, page_nums: List[Float]) -> Bool =
     ok(f) => list.any(page_nums, (n) => same_quantity(f, n)),
   }
 
+// How close the page comes to this figure, 0..100.
+//
+// Binary found/not-found cannot separate the two reasons a figure goes missing, and
+// the measurement showed why: a corruption changes one probe, and so does an honest
+// restatement, so any threshold on *how many* probes are missing confounds them. The
+// way out is *how far* each one is.
+//
+//   claim 5148.1  page 514806000 (×10^5)  → relative distance 0.0000078  → 100
+//   claim 8751.8  page 514806000           → nearest scale is 1.7× out   → 0
+//
+// A rounding is thousands of times closer than a wrong quantity, and that gap is
+// what a calibrated threshold can sit in. Scored in integer percent so the arithmetic
+// stays exact and the number is readable in a report.
+local fn rel_distance(a: Float, b: Float) -> Float = {
+  let scale = float.max(float.abs(a), float.abs(b))
+  if scale == 0.0 then 0.0 else float.abs(a - b) / scale
+}
+
+// The smallest relative distance to any page number under any power-of-ten scale.
+fn nearest(figure: Float, page_nums: List[Float]) -> Float = {
+  var best = 1.0
+  for n in page_nums {
+    for e in SCALES {
+      let f = math.fpow(10.0, float.from_int(e))
+      best = float.min(best, float.min(rel_distance(figure, n * f), rel_distance(figure * f, n)))
+    }
+  }
+  best
+}
+
+// 100 at distance 0, 0 at 10% or worse, log-shaped between so the interesting range
+// (a rounding, 1e-5..1e-2) is spread out instead of all landing on 99.
+fn closeness(figure_text: String, page_nums: List[Float]) -> Int =
+  match float.parse(figure_text) {
+    err(_) => 0,
+    ok(f) => {
+      let d = nearest(f, page_nums)
+      if d >= 0.1 then 0
+      else if d <= 0.0 then 100
+      else {
+        // -log10(d) runs 1 (at 0.1) to ~6 (at 1e-6); map that onto 0..100.
+        let decades = 0.0 - math.log10(d)
+        let pct = float.to_int(float.round((decades - 1.0) / 5.0 * 100.0))
+        if pct < 0 then 0 else if pct > 100 then 100 else pct
+      }
+    },
+  }
+
 test "the same quantity in different units is the same quantity" {
   // NT$5148.1億 against the 514,806,000-thousand the source prints.
   assert(same_quantity(5148.1, 514806000.0))
@@ -109,4 +157,21 @@ test "numbers come out of page text, short runs skipped" {
 test "a figure is supported by a differently scaled page number" {
   assert(supported_by("5148.1", numbers_in("nt$ 514806000 thousand")))
   assert_eq(supported_by("7785.9", numbers_in("nt$ 514806000 thousand")), false)
+}
+
+test "a rounding scores far above a wrong quantity" {
+  let page = numbers_in("nt$ 514806000 thousand")
+  let rounded = closeness("5148.1", page)      // the real claim
+  let wrong = closeness("8751.8", page)        // 1.7x the real claim
+  assert(rounded > 80)
+  assert_eq(wrong, 0)
+  assert(rounded - wrong > 80)
+}
+
+test "closeness is graded, not binary" {
+  let page = numbers_in("revenue 1000000")
+  assert_eq(closeness("1000.0", page), 100)
+  assert(closeness("1002.0", page) > 0)
+  assert(closeness("1002.0", page) < 100)
+  assert_eq(closeness("1700.0", page), 0)
 }

@@ -129,15 +129,57 @@ fn of(text: String, min_digits: Int) -> List[claim.Probe] =
     + list.map(list.filter(quotes(text), (q) => not negated(q, text)), (q) => claim.probe("quote", q))
     + list.map(list.filter(entities(text), (e) => not negated(e, text)), (e) => claim.probe("entity", e))
 
-// Figures are compared as quantities, everything else as text.
+// How strongly a page supports one probe, 0..100.
 //
-// A quote and a name are literal assertions — the claim says these exact words and
-// this exact name appear — so containment is the right test. A figure is not: a
-// claim restates it in its own units and rounding, and 66% of curated claims were
-// refused for doing so. Arithmetic is the right test there.
-fn found_on(p: claim.Probe, page: claim.Attempt) -> Bool =
-  if p.kind == "figure" then numeric.supported_by(p.value, page.nums)
-  else string.contains(page.text, tokens.normalize(p.value))
+// Graded rather than binary, and that is the whole point. A corruption changes one
+// probe and an honest restatement changes one probe, so a count of missing probes
+// cannot tell them apart — measured, 91 claims, the confound holds at every
+// threshold. A distance can: a rounded figure lands near 100 and a 1.7x figure lands
+// on 0, with three orders of magnitude between them.
+//
+// Text probes stay binary for now. A quote is a literal assertion, so containment is
+// the right question; grading it (longest common span) is the obvious next step and
+// is not built.
+// How much of a text probe the page carries, 0..100.
+//
+// Graded for the same reason figures are. A name is not present-or-absent on a real
+// page: "Western Digital" appears as "Western Digital Corp", as "WD", or inside a
+// longer phrase, and a quote gets an ellipsis or a particle changed. Binary
+// containment scored all of those as 0 and they were the bulk of the false refusals
+// — entity probes alone were 290 of 440, and a single 0 drags a mean down hard.
+//
+// Prefixes rather than a longest-common-substring: an LCS against a 100 KB page per
+// probe is far too slow, and the leading part of a name or a quotation is the part a
+// source keeps. Four containment checks, worst case.
+local fn text_strength(value: String, page_text: String) -> Int = {
+  let v = tokens.normalize(value)
+  let n = string.len(v)
+  if string.contains(page_text, v) then 100
+  else {
+    var best = 0
+    for pct in [75, 50, 25] {
+      let cut = n * pct / 100
+      if cut >= 3 and best == 0 and string.contains(page_text, string.take(v, cut)) then best = pct else ()
+    }
+    best
+  }
+}
+
+fn strength(p: claim.Probe, page: claim.Attempt) -> Int =
+  if p.kind == "figure" then numeric.closeness(p.value, page.nums)
+  else text_strength(p.value, page.text)
+
+// The best any cited page does for this probe.
+fn best_strength(p: claim.Probe, pages: List[claim.Attempt]) -> Int = {
+  var best = 0
+  for pg in pages {
+    let s = strength(p, pg)
+    if s > best then best = s else ()
+  }
+  best
+}
+
+fn found_on(p: claim.Probe, page: claim.Attempt) -> Bool = strength(p, page) >= 50
 
 test "quotes come out without their brackets" {
   assert_eq(quotes("社長は「過去最高の需要」と述べた"), ["過去最高の需要"])
@@ -201,4 +243,23 @@ test "a plain mention still yields its probe" {
 
 test "a negation far away does not disarm the probe" {
   assert(list.any(of("TSMC が発表した。なお別の話だが今回の件は対象ではない", 3), (p) => p.value == "TSMC"))
+}
+
+test "a name the page extends is fully supported" {
+  let pg = claim.Attempt { url: "u", error: "", nums: [],
+    text: tokens.normalize("Western Digital Corp announced") }
+  assert_eq(strength(claim.probe("entity", "Western Digital"), pg), 100)
+}
+
+test "a partially carried name scores between, not zero" {
+  let pg = claim.Attempt { url: "u", error: "", nums: [],
+    text: tokens.normalize("Western Union said") }
+  let s = strength(claim.probe("entity", "Western Digital"), pg)
+  assert(s > 0)
+  assert(s < 100)
+}
+
+test "an unrelated page still scores zero" {
+  let pg = claim.Attempt { url: "u", error: "", nums: [], text: tokens.normalize("samsung said") }
+  assert_eq(strength(claim.probe("entity", "Western Digital"), pg), 0)
 }

@@ -43,7 +43,7 @@ local fn best_source(pages: List[claim.Attempt], ps: List[claim.Probe]) -> Strin
   var best = ""
   var best_hits = 0 - 1
   for pg in pages {
-    let hits = list.len(list.filter(ps, (p) => probes.found_on(p, pg)))
+    let hits = list.len(list.filter(ps, (p) => probes.strength(p, pg) >= 50))
     if hits > best_hits then {
       best_hits = hits
       best = pg.url
@@ -52,10 +52,16 @@ local fn best_source(pages: List[claim.Attempt], ps: List[claim.Probe]) -> Strin
   best
 }
 
-// The share of a claim's probes that were found, in percent so the arithmetic
-// stays integral. An empty probe list never reaches here — `early` refuses it.
-fn support_pct(found: List[claim.Probe], checked: List[claim.Probe]) -> Int =
-  100 * list.len(found) / list.len(checked)
+// A claim's support: the mean strength of its probes, 0..100.
+//
+// A mean rather than a share, because a share counts probes and counting is what the
+// measurement showed cannot work — false refusal climbed from 70% to 86% as probe
+// count rose from 1 to 7+, since every extra piece of evidence is another chance to
+// be scored missing. Averaging strengths removes that bias: a claim with six probes
+// near 100 and one at 40 scores well, and the same claim with one probe at 0 does
+// not. An empty probe list never reaches here — `early` refuses it.
+fn support_pct(strengths: List[Int]) -> Int =
+  list.fold(strengths, 0, (acc, s) => acc + s) / list.len(strengths)
 
 fn verdict_at(c: claim.Claim, attempts: List[claim.Attempt], min_digits: Int, min_support: Int) -> claim.Verdict =
   match early(c, min_digits) {
@@ -70,8 +76,9 @@ fn verdict_at(c: claim.Claim, attempts: List[claim.Attempt], min_digits: Int, mi
           some(a) => claim.Unreachable { url: a.url, detail: a.error },
         },
         false => {
-          let found = list.filter(checked, (p) => list.any(pages, (pg) => probes.found_on(p, pg)))
-          let missing = list.filter(checked, (p) => not list.any(pages, (pg) => probes.found_on(p, pg)))
+          let strengths = list.map(checked, (p) => probes.best_strength(p, pages))
+          let found = list.filter(checked, (p) => probes.best_strength(p, pages) >= 50)
+          let missing = list.filter(checked, (p) => probes.best_strength(p, pages) < 50)
           // Decided on the share of probes found, not on whether any is missing.
           //
           // All-or-nothing was measured and it has no usable operating point: over
@@ -80,7 +87,7 @@ fn verdict_at(c: claim.Claim, attempts: List[claim.Attempt], min_digits: Int, mi
           // quote 68%, entity 65%). A binary verdict offers nothing to calibrate —
           // there is no score to move a threshold along. A share does, which is what
           // makes the conformal step possible at all rather than merely next.
-          match support_pct(found, checked) >= min_support {
+          match support_pct(strengths) >= min_support {
             true => claim.Supported { matched: checked, source: best_source(pages, checked) },
             false => claim.Unsupported { missing: missing, matched: found, checked: checked },
           }

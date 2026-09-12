@@ -138,9 +138,11 @@ calibration set. Turns a hand-set threshold into "error rate ≤ α".
 The first version of this section ordered the work by cost: A-group first because it
 needs no inference. That rationale was wrong, and the measurement is in
 [README.md](./README.md#measured): **A-group alone has no usable operating point at
-any threshold.** Over 91 decided timeline entries, the best trade available is 72.5%
-false refusal for 89.5% detection, and the point with tolerable false refusal
-(25.3%) detects 3.1%. Cheapness does not matter when the whole curve is unusable.
+any threshold, in any of four scoring schemes.** Over 91 decided timeline entries the
+best trade anywhere is 61.5% false refusal for 54.9% detection, and the point with
+tolerable false refusal (22.0%) detects 1.2%. Quantity comparison, graded figures and
+graded text together bought about six points of specificity. Cheapness does not matter
+when the whole curve is unusable, and this is a ceiling rather than a backlog.
 
 So B-group is not "next". It is **required**, for a reason the measurement makes
 concrete: A-group asks whether the source contains the claim's evidence, and two
