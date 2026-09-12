@@ -29,57 +29,79 @@ Today emet abstains on a large fraction of real claims with **no bound at all**.
 That is the baseline. The bound comes in v2; until then the cost function has no
 constraint and the numbers below are descriptive, not guarantees.
 
-## The benchmark target
+## The benchmark target, and where the gap actually is
 
-The agentic composite that the general-purpose coding agents are ranked on
-(Terminal-Bench 2.0 30% · BrowseComp 25% · OSWorld-Verified 25% · OSWorld 2.0 10%),
-as reported by [BenchLM, September 2026](https://benchlm.ai/agentic):
+The agentic composite the general-purpose coding agents are ranked on, as reported by
+[BenchLM, September 2026](https://benchlm.ai/agentic) — Terminal-Bench 2.0 30% ·
+BrowseComp 25% · OSWorld-Verified 25% · OSWorld 2.0 10%, the four documented weights
+summing to 90%:
 
-| | score | weights |
+| | composite | weights |
 |---|---|---|
 | Claude Fable 5.1 | 80.2 | closed |
 | Claude Opus 5 | 78.1 | closed |
 | Kimi K3 | 71.9 | open |
 | GLM-5.3 | 68.4 | open |
-| GLM-5.3-Flash | 60.1 | open |
 
-**On a benchmark, abstention scores zero.** A gate that refuses an answer gets no
-credit for being right about refusing. So the gate's value here is not abstention
-at all — it is this:
+### The first read of this was wrong
 
-> **A refusal that names what gave way is a retry signal. On a task with no
-> verifier, it is the only one there is.**
+The original version of this section reasoned: three of four components validate by
+execution or compile, BrowseComp does not, therefore BrowseComp is where open weights
+lose and a citation gate is the missing verifier. That was a guess about where the
+8.3-point gap lives, and it does not survive the published component scores.
 
-On Terminal-Bench a compiler supplies that signal, which is why open weights are
-already close there — GLM-5.3-Flash scores 84.3 on Terminal-Bench 2.1
-([leaderboard](https://codingfleet.com/blog/terminal-bench-leaderboard-2026/)),
-above the composite target. OSWorld validates by execution, so it has one too.
+| component (weight) | best open-weight | best Claude |
+|---|---|---|
+| Terminal-Bench (30%) | GLM-5.3 **88.2** | Opus 5 ≈89 |
+| BrowseComp (25%) | Kimi K3 **91.2** | Opus 5 90.8 |
+| OSWorld-Verified (25%) | Qwen3.8 Max **86.1** · Kimi K3 84.8 | Fable 5 85.0 |
+| OSWorld 2.0 (10%) | Kimi K3 58.3 | GPT-5.6 Sol 62.6 |
 
-**BrowseComp has none.** An answer is prose with sources, and nothing tells the
-agent it is wrong. That 25% is where the composite is lost, and it is exactly the
-shape emet takes as input.
+**On every component, open weights are within roughly a point of Claude's best or
+ahead of it.** BrowseComp in particular is near saturation — the top models sit inside
+1.0 point of each other — and Kimi K3 leads it. A gate that supplies BrowseComp with a
+verifier is aimed at the component that is not the bottleneck.
 
-So the leverage is concentrated, and the claim this design makes is narrow enough
-to be falsified: *supplying a verifier to the one unverified component is worth
-more than improving the model.* Fugu is the existing evidence that a composition
-can beat its parts — Fugu Ultra reaches 82.1 on Terminal-Bench 2.1 with a pool
-whose best member is 78.2 ([technical report](https://arxiv.org/html/2606.21228v1)).
+### What the arithmetic says instead
 
-**Not reached, and the measurement says why.** The gate's own detector curve has no
-usable operating point (see [README.md](./README.md#measured)), so it cannot yet
-serve as the retry signal that argument depends on. Two things are outstanding and
-they are different in kind:
+Reconstructing the composite from each model's own published component bests, over the
+90% of weight that is documented:
 
-- *Blocked here:* the end-to-end experiment — BrowseComp with and without the gate in
-  a retry loop, same model, same budget — needs a model under test. No API credentials
-  are available in this environment.
-- *Open regardless:* per-component scores for GLM-5.3 are not published, so the
-  arithmetic from 68.4 to above 80.2 cannot be completed from public numbers even
-  with the loop built.
+| | reconstructed | published | shortfall |
+|---|---|---|---|
+| Claude, best of Opus 5 / Fable 5 | 85.5 | **80.2** | −5.3 |
+| Kimi K3 alone, at its own bests | 84.8 | **71.9** | **−12.9** |
+| Open weights, best per component | 85.1 | — | — |
 
-What *was* measurable without a model is the half the loop rests on: whether the gate
-detects wrong answers without refusing right ones. It does not, yet. That is the
-finding, and it is why step 2 below changed.
+Two things fall out, and the second is the one that matters.
+
+**Kimi K3's own component scores reconstruct to 84.8 — above Fable 5.1's published
+80.2.** The capability to exceed the target is already in an open-weight model.
+
+**And every model's published composite is below its own reconstruction, but the open-weight
+model loses two and a half times as much.** A composite measures every model through one
+common harness. Claude gives up 5.3 points to that; Kimi K3 gives up 12.9. The
+difference is not ability — it is that Claude's harness is co-designed with Claude, and
+an open-weight model in a generic scaffold cannot reach scores it demonstrably has.
+This is the same effect the Terminal-Bench maintainers warn about when they note the
+same model can swing 30 to 50 points depending on which harness wraps it.
+
+> **So the target is not a capability gap to close. It is ~13 points of a model's own
+> measured ability that a generic harness throws away, and the harness is the part a
+> system builder controls.**
+
+That is what golemide is for, and it is why the composite claim belongs to the harness
+work rather than to this repo. `emet` remains useful for what it actually does — making
+a claim's grounding checkable where nothing checked it before — but the measurement says
+it is not the lever on this benchmark.
+
+**Caveats, stated because the reconstruction is arithmetic on other people's numbers.**
+Component scores come from different pages and different harness configurations, several
+at "maximum thinking, tools enabled", and BenchLM does not publish the per-model
+breakdown behind its composite — so these reconstructions are upper bounds on what a
+harness could recover, not measured composites. 10% of the composite weight is
+undocumented. Nothing here has been run end to end; doing that needs a model under test,
+and no API credentials are available in this environment.
 
 ## Five rules
 
