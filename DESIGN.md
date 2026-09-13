@@ -100,8 +100,40 @@ Component scores come from different pages and different harness configurations,
 at "maximum thinking, tools enabled", and BenchLM does not publish the per-model
 breakdown behind its composite — so these reconstructions are upper bounds on what a
 harness could recover, not measured composites. 10% of the composite weight is
-undocumented. Nothing here has been run end to end; doing that needs a model under test,
-and no API credentials are available in this environment.
+undocumented.
+
+### The part of this that has now been tested, and failed
+
+The claim above has two halves. "A generic harness throws away ~13 points" is a
+reconstruction and stands as one. "And prompt overhead is where it goes" was the working
+hypothesis, and it has been measured.
+
+Three defects were found in golemide's prompt and loop, model-free, and fixed: the
+language reference sent twice per attempt (42% of the prompt), a stale baseline
+diagnostic sent under the header `CURRENT TEST OUTPUT` on every retry (5–7%), and a
+latency guard cancelling an escalation the retry ladder had earned (4/4 collisions).
+
+The effect on solve rate was measured twice, on two corpora:
+
+| corpus | paired trials | before | after all fixes | sign test |
+|---|---|---|---|---|
+| Almide exercises, 2 attempts | 24 | 18/24 | 18/24 | p = 1.000 |
+| Aider polyglot (rust + cpp), 3 attempts | 54 | 49/54 | 49/54 | p = 1.000 |
+
+**Zero, both times.** Cost per attempt fell 41.5% on the Almide corpus and not at all on
+the polyglot one — the deduplication has nothing to deduplicate where a project carries
+no reference file, so even the cost win is corpus-specific.
+
+So the second half of the claim is wrong as stated. Prompt bloat costs money and is worth
+removing, but a token saved is not a problem solved, and these three defects were not
+what the harness loses points to. The ~13-point reconstruction may still be real; what is
+now known is that it is not made of prompt overhead. That matters more than the cost
+figure, because it removes the explanation that was easiest to believe and cheapest to
+act on — which is exactly the kind of claim this repo exists to stop anyone from
+asserting without a measurement.
+
+The raw data and the instruments are in golemide: `bench/constrained.sh`,
+`bench/budget.almd`, `bench/results-constrained.tsv`, `bench/results-polyglot-*.tsv`.
 
 ## Five rules
 
