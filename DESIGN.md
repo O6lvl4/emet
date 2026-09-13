@@ -86,11 +86,17 @@ an open-weight model in a generic scaffold cannot reach scores it demonstrably h
 This is the same effect the Terminal-Bench maintainers warn about when they note the
 same model can swing 30 to 50 points depending on which harness wraps it.
 
-> **So the target is not a capability gap to close. It is ~13 points of a model's own
+> **~~So the target is not a capability gap to close. It is ~13 points of a model's own
 > measured ability that a generic harness throws away, and the harness is the part a
-> system builder controls.**
+> system builder controls.~~**
+>
+> **RETRACTED.** The two composites being subtracted are averages over different
+> component sets, and the per-component figures come from vendor reports rather than from
+> the composite's own measurements. See *The reconstruction itself does not hold* below.
+> The number is an artifact; nothing here establishes that a harness throws away 13 points,
+> or any points.
 
-That is what golemide is for, and it is why the composite claim belongs to the harness
+That was what golemide was for, and it is why the composite claim belonged to the harness
 work rather than to this repo. `emet` remains useful for what it actually does — making
 a claim's grounding checkable where nothing checked it before — but the measurement says
 it is not the lever on this benchmark.
@@ -102,11 +108,41 @@ breakdown behind its composite — so these reconstructions are upper bounds on 
 harness could recover, not measured composites. 10% of the composite weight is
 undocumented.
 
-### The part of this that has now been tested, and failed
+### The reconstruction itself does not hold
 
-The claim above has two halves. "A generic harness throws away ~13 points" is a
-reconstruction and stands as one. "And prompt overhead is where it goes" was the working
-hypothesis, and it has been measured.
+Checked against BenchLM's own per-benchmark leaderboards, and it fails for a reason that
+has nothing to do with harnesses.
+
+The weights above are right — Terminal-Bench 2.0 30%, BrowseComp 25%, OSWorld-Verified
+25%, OSWorld 2.0 10%, everything else display-only — and so are the published composites.
+The sentence that matters is how the composite handles a missing component: it is
+**normalized by available weights**. And the components are missing, differently for each
+model:
+
+| component | Kimi K3 | Claude Fable 5.1 | Claude Opus 5 | GLM-5.3 |
+|---|---|---|---|---|
+| BrowseComp | **91.2** | not listed | 90.8 | not listed |
+| OSWorld-Verified | **not listed** | Fable 5: 85.0 | not listed | not listed |
+
+So 71.9 and 80.2 are not two measurements of the same thing. Each is an average over
+whichever components that model has, and the sets differ — Kimi K3 has the BrowseComp
+score and no OSWorld-Verified one; Fable 5.1 is the other way round.
+
+The reconstruction above took each model's **vendor-reported best** on all four components
+— several at "maximum thinking, tools enabled" — and subtracted a composite computed over
+only *some* components, then read the difference as harness loss. Two different
+normalizations and two different data sources. The −12.9 and −5.3 are artifacts of that
+mismatch. **There was never a measured ~13 points to recover, and the asymmetry between the
+open and closed model was an artifact of which components each one happens to be listed
+for.**
+
+This is the premise the harness work below was built on, so it is worth being blunt: the
+work that followed was aimed at a gap that this arithmetic invented.
+
+### What was tested anyway, and what it found
+
+"Prompt overhead is where the harness loses" was the working hypothesis, and it was
+measured independently of the premise above.
 
 Three defects were found in golemide's prompt and loop, model-free, and fixed: the
 language reference sent twice per attempt (42% of the prompt), a stale baseline
